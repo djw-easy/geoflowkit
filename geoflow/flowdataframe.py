@@ -11,9 +11,57 @@ from geopandas import GeoDataFrame, GeoSeries
 from geopandas.geodataframe import _ensure_geometry
 
 import matplotlib.pyplot as plt
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, MultiPoint
 
-from geoflow.io import geometry_to_flow
+
+crs_mismatch_error = (
+    "CRS mismatch between CRS of the passed geometries "
+    "and 'crs'. Use 'GeoDataFrame.set_crs(crs, "
+    "allow_override=True)' to overwrite CRS or "
+    "'GeoDataFrame.to_crs(crs)' to reproject geometries. "
+)
+
+
+def geometry_to_flow(geometry):
+    """
+    Convert a GeoDataFrame's line geometry column to a flow-compatible format.
+
+    This function checks if all geometries are LineString type and processes any LineStrings 
+    with more than two points by keeping only the first and last points.
+
+    Parameters:
+    -----------
+    geometry : GeoSeries
+        The line geometry column of a GeoDataFrame containing flow data.
+
+    Returns:
+    --------
+    GeoSeries
+        A GeoSeries with all geometries as MultiPoint with exactly two points.
+
+    Raises:
+    -------
+    ValueError
+        If any geometry in the input geometry column is not a LineString.
+
+    Warns:
+    ------
+    UserWarning
+        If any LineString has more than two points.
+    """
+    if not all(isinstance(geom, LineString) for geom in geometry):
+        raise ValueError("All geometries must be LineString type")
+
+    warning_issued = False
+    for idx, geom in enumerate(geometry):
+        if len(geom.coords) > 2:
+            if not warning_issued:
+                import warnings
+                warnings.warn("Some LineStrings have more than two points. Only the first and last points will be kept.", UserWarning)
+                warning_issued = True
+            geometry.iloc[idx] = MultiPoint([geom.coords[0], geom.coords[-1]])
+
+    return geometry
 
 
 class FlowDataFrame(GeoDataFrame):
@@ -57,9 +105,35 @@ class FlowDataFrame(GeoDataFrame):
                 raise ValueError(f"Not all columns in use_cols {use_cols} found in data")
             origin_points = data[use_cols[:2]].values
             dest_points = data[use_cols[2:]].values
-            geometry = [LineString([o, d]) for o, d in zip(origin_points, dest_points)]
+            geometry = [MultiPoint([o, d]) for o, d in zip(origin_points, dest_points)]
+            super().__init__(data, *args, geometry=geometry, crs=crs, **kwargs)
+        
+        if geometry is not None:
+            if (
+                hasattr(geometry, "crs")
+                and geometry.crs
+                and crs
+                and not geometry.crs == crs
+            ):
+                raise ValueError(crs_mismatch_error)
+
+            if isinstance(geometry, (pd.Series, GeoSeries)) and geometry.name not in (
+                "geometry",
+                None,
+            ):
+                # __init__ always creates geometry col named "geometry"
+                # rename as `set_geometry` respects the given series name
+                geometry = geometry.rename("geometry")
+            geometry = _ensure_geometry(geometry, crs)
+            # TODO: geometry type check
+            # self.check_geometry(geometry, inplace=True, crs=crs)
+        
             super().__init__(data, *args, geometry=geometry, crs=crs, **kwargs)
         super().__init__(data, *args, geometry=geometry, crs=crs, **kwargs)
+        
+    # TODO: geometry type check
+    # def check_geometry(self, *args, **kwargs):
+    #     return super().set_geometry(*args, **kwargs)
 
     def __getitem__(self, key):
         """Override to ensure type preservation during indexing"""
@@ -72,15 +146,16 @@ class FlowDataFrame(GeoDataFrame):
                 result.__class__ = FlowDataFrame
             return result
         return super().__getitem__(key)
+    
+    def __finalize__(self, other, method=None, **kwargs):
+        result = super().__finalize__(other, method=method, **kwargs)
+        if isinstance(result, GeoDataFrame) and not isinstance(result, FlowDataFrame):
+            result.__class__ = FlowDataFrame
+        return result
 
     @property
     def _constructor(self):
         return FlowDataFrame
-
-    @property
-    def _constructor_sliced(self):
-        from pandas import Series
-        return Series
 
     def check_geographic_crs(self, stacklevel):
         """Check CRS and warn if the planar operation is done in a geographic CRS"""
@@ -129,6 +204,7 @@ class FlowDataFrame(GeoDataFrame):
         origin_points : GeoSeries
             The origin points of the flow.
         """
+        return self.geometry.get_geometry(0)
         return self.geometry.apply(lambda x: Point(x.coords[0]))
 
     @property
@@ -141,6 +217,7 @@ class FlowDataFrame(GeoDataFrame):
         dest_points : GeoSeries
             The destination points of the flow.
         """
+        return self.geometry.get_geometry(1)
         return self.geometry.apply(lambda x: Point(x.coords[-1]))
 
     def plot(self, kind='arrow', ax=None, column=None, figsize=None, **kwargs) -> plt.Axes:
