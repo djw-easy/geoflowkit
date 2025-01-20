@@ -1,3 +1,4 @@
+import shapely
 import warnings
 import numpy as np
 from shapely.geometry import LineString
@@ -25,8 +26,8 @@ def pairwise_distances(fdf: FlowDataFrame, distance='max', metric='euclidean', w
         ValueError: If an invalid 'distance' is specified.
     """
 
-    origins = fdf.origin_points
-    destinations = fdf.dest_points
+    origins = shapely.get_coordinates(fdf.origin_points)
+    destinations = shapely.get_coordinates(fdf.dest_points)
 
     o_dis_matrix = squareform(pdist(origins, metric=metric))
     d_dis_matrix = squareform(pdist(destinations, metric=metric))

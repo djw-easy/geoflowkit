@@ -2,11 +2,12 @@ import json
 import warnings
 from functools import wraps
 
+import shapely
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 from pandas import DataFrame
-from geopandas import GeoDataFrame
+from geopandas import GeoDataFrame, GeoSeries
 from geopandas.geodataframe import _ensure_geometry
 
 import matplotlib.pyplot as plt
@@ -125,10 +126,10 @@ class FlowDataFrame(GeoDataFrame):
 
         Returns
         -------
-        origin_points : array-like
+        origin_points : GeoSeries
             The origin points of the flow.
         """
-        return np.array(self.geometry.apply(lambda x: x.coords[0]).tolist())
+        return self.geometry.apply(lambda x: Point(x.coords[0]))
 
     @property
     def dest_points(self):
@@ -137,10 +138,10 @@ class FlowDataFrame(GeoDataFrame):
 
         Returns
         -------
-        dest_points : array-like
+        dest_points : GeoSeries
             The destination points of the flow.
         """
-        return np.array(self.geometry.apply(lambda x: x.coords[1]).tolist())
+        return self.geometry.apply(lambda x: Point(x.coords[-1]))
 
     def plot(self, kind='arrow', ax=None, column=None, figsize=None, **kwargs):
         """
@@ -184,8 +185,8 @@ class FlowDataFrame(GeoDataFrame):
                 C = self[column].values
             else:
                 C = None
-            origins = self.origin_points
-            destinations = self.dest_points
+            origins = shapely.get_coordinates(self.origin_points)
+            destinations = shapely.get_coordinates(self.dest_points)
             u = destinations[:, 0] - origins[:, 0]
             v = destinations[:, 1] - origins[:, 1]
 
@@ -231,8 +232,8 @@ class FlowDataFrame(GeoDataFrame):
             raise ValueError("Must specify either delta_x and delta_y, or x_size and y_size.")
         
         # Calculate the grid for origin and destination points
-        origins = self.origin_points
-        destinations = self.dest_points
+        origins = shapely.get_coordinates(self.origin_points)
+        destinations = shapely.get_coordinates(self.dest_points)
         self.loc[:, 'o_grid_x'] = ((origins[:, 0] - self.bounds.minx) / delta_x).fillna(-1).astype(int)
         self.loc[:, 'o_grid_y'] = ((origins[:, 1] - self.bounds.miny) / delta_y).fillna(-1).astype(int)
         self.loc[:, 'd_grid_x'] = ((destinations[:, 0] - self.bounds.minx) / delta_x).fillna(-1).astype(int)
