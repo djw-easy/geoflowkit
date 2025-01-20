@@ -94,7 +94,7 @@ class FlowDataFrame(GeoDataFrame):
             )
 
     @property
-    def volume(self):
+    def volume(self) -> float:
         """
         Calculate the volume of the flow space.
 
@@ -108,7 +108,7 @@ class FlowDataFrame(GeoDataFrame):
         return (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
 
     @property
-    def density(self):
+    def density(self) -> float:
         """
         Calculate the density of the flow space.
 
@@ -120,7 +120,7 @@ class FlowDataFrame(GeoDataFrame):
         return len(self) / self.volume
 
     @property
-    def origin_points(self):
+    def origin_points(self) -> GeoSeries:
         """
         Get the origin points of the flow.
 
@@ -132,7 +132,7 @@ class FlowDataFrame(GeoDataFrame):
         return self.geometry.apply(lambda x: Point(x.coords[0]))
 
     @property
-    def dest_points(self):
+    def dest_points(self) -> GeoSeries:
         """
         Get the destination points of the flow.
 
@@ -143,7 +143,7 @@ class FlowDataFrame(GeoDataFrame):
         """
         return self.geometry.apply(lambda x: Point(x.coords[-1]))
 
-    def plot(self, kind='arrow', ax=None, column=None, figsize=None, **kwargs):
+    def plot(self, kind='arrow', ax=None, column=None, figsize=None, **kwargs) -> plt.Axes:
         """
         Plot the flow data.
 
@@ -206,7 +206,7 @@ class FlowDataFrame(GeoDataFrame):
         else:
             return super().plot(kind=kind, ax=ax, column=column, figsize=figsize, **kwargs)
         
-    def to_grid(self, delta_x=None, delta_y=None, x_size=None, y_size=None):
+    def to_grid(self, delta_x=None, delta_y=None, x_size=None, y_size=None) -> 'FlowDataFrame':
         """Divide the study area into a grid and calculate the grid of the origin and destination points of each flow.
 
         Parameters:
@@ -245,7 +245,7 @@ class FlowDataFrame(GeoDataFrame):
         
         return self
     
-    def within(self, mask):
+    def within(self, mask) -> pd.Series:
         """
         Select the flow data within the given mask.
 
