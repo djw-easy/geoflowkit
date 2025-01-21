@@ -1,33 +1,47 @@
 import shapely
 import warnings
 import numpy as np
-from shapely.geometry import LineString
 from geoflow.flowdataframe import FlowDataFrame
 from scipy.spatial.distance import pdist, squareform
 
 
 
 def pairwise_distances(fdf: FlowDataFrame, distance='max', metric='euclidean', w1=1, w2=1, length=True):
+    """Calculate the pairwise distance matrix for flows based on their origin and destination points.
+
+    Parameters
+    ----------
+    fdf : FlowDataFrame
+        A FlowDataFrame containing the flow data
+    distance : str
+        The type of distance calculation. Options are:
+        - 'max': Maximum of origin and destination distances
+        - 'min': Minimum of origin and destination distances
+        - 'sum': Sum of origin and destination distances
+        - 'mean': Average of origin and destination distances
+        - 'weighted': Weighted combination of origin and destination distances
+    metric : str or function, optional
+        The distance metric to use, by default 'euclidean'
+    w1 : float, optional
+        Weight for origin distances when distance is 'weighted', by default 1
+    w2 : float, optional
+        Weight for destination distances when distance is 'weighted', by default 1
+    length : bool, optional
+        Whether to use flow lengths for weighted distance calculation, by default True
+
+    Returns
+    -------
+    np.ndarray
+        A square distance matrix of shape [N, N], where N is the number of flows
+
+    Raises
+    ------
+    ValueError
+        If an invalid 'distance' type is specified
     """
-    Calculate the pairwise distance matrix for flows based on their origin and destination points.
 
-    Parameters:
-        fdf (FlowDataFrame): A FlowDataFrame containing the flow data.
-        distance (str): The type of distance calculation. Options are 'max', 'min', 'sum', 'mean', or 'weighted'.
-        metric (str or function): The distance metric to use. Default is 'euclidean'.
-        w1 (float): Weight for origin distances when distance is 'weighted'. Default is 1.
-        w2 (float): Weight for destination distances when distance is 'weighted'. Default is 1.
-        length (bool): Whether to use flow lengths for weighted distance calculation. Default is True.
-
-    Returns:
-        np.ndarray: A square distance matrix of shape [N, N], where N is the number of flows.
-
-    Raises:
-        ValueError: If an invalid 'distance' is specified.
-    """
-
-    origins = shapely.get_coordinates(fdf.origin_points)
-    destinations = shapely.get_coordinates(fdf.dest_points)
+    origins = shapely.get_coordinates(fdf.o)
+    destinations = shapely.get_coordinates(fdf.d)
 
     o_dis_matrix = squareform(pdist(origins, metric=metric))
     d_dis_matrix = squareform(pdist(destinations, metric=metric))

@@ -5,16 +5,26 @@ from shapely.geometry import LineString, Point, Polygon
 
 
 def nth_largest(arr, n, axis):
-    """
-    Calculate the Nth largest number along the specified axis.
+    """Calculate the Nth largest number along the specified axis.
 
-    Parameters:
-        arr (np.ndarray): Input array.
-        n (int): The Nth largest number (starting from 1).
-        axis (int): The axis along which to calculate.
+    Parameters
+    ----------
+    arr : np.ndarray
+        Input array of numbers
+    n : int
+        The Nth largest number to find (starting from 1)
+    axis : int
+        The axis along which to calculate the Nth largest number
 
-    Returns:
-        np.ndarray: The Nth largest number along the specified axis.
+    Returns
+    -------
+    np.ndarray
+        The Nth largest number along the specified axis
+
+    Raises
+    ------
+    ValueError
+        If n is greater than the length of the specified axis
     """
     if n > arr.shape[axis]:
         raise ValueError("n cannot be greater than the length of the specified axis")
@@ -29,20 +39,30 @@ def nth_largest(arr, n, axis):
 
 
 def _second_order_density(dis_matrix, distance='max', k=1, mask=None):
-    """
-    Calculate the second-order density of flows.
+    """Calculate the second-order density of flows.
 
-    Parameters:
-        dis_matrix (np.ndarray): Distance matrix with shape (N, N) between flows.
-        distance (str, optional): The distance metric type used. Default is 'max'.
-        k (int, optional): The k-th nearest neighbor to consider. Default is 1.
-        mask (np.ndarray, optional): Boolean mask to filter flows, 1-D np.ndarray. If None, all flows are used.
+    Parameters
+    ----------
+    dis_matrix : np.ndarray
+        Distance matrix with shape (N, N) between flows
+    distance : str, optional
+        The distance metric type used, by default 'max'
+    k : int, optional
+        The k-th nearest neighbor to consider, by default 1
+    mask : np.ndarray, optional
+        Boolean mask to filter flows (1-D array). If None, all flows are used
 
-    Returns:
-        float: The calculated second-order density.
+    Returns
+    -------
+    float
+        The calculated second-order density
 
-    Raises:
-        NotImplementedError: If distance is not 'max'.
+    Raises
+    ------
+    AssertionError
+        If distance matrix is not square
+    NotImplementedError
+        If distance metric is not 'max'
     """
     assert dis_matrix.ndim==2 and dis_matrix.shape[0] == dis_matrix.shape[1], "The distance matrix must be square."
     flow_num = dis_matrix.shape[0]
@@ -72,19 +92,33 @@ def _second_order_density(dis_matrix, distance='max', k=1, mask=None):
 
 
 def second_order_density(fdf: FlowDataFrame=None, dis_matrix=None, distance='max', k=1, mask=None, **kwargs):
-    """
-    Calculate the second-order density for a FlowDataFrame.
+    """Calculate the second-order density for a FlowDataFrame.
 
-    Parameters:
-        fdf (FlowDataFrame, optional): The input flow dataframe.
-        dis_matrix (np.ndarray, optional): Pre-computed distance matrix with shape (N, N). If None, it will be calculated.
-        distance (str, optional): The distance metric type used. Default is 'max'.
-        k (int, optional): The k-th nearest neighbor to consider. Default is 1.
-        mask (GeoSeries or geometric object, optional): The GeoSeries (elementwise) or geometric object to test if each flow is within. Default is None, which means all flows are used.
-        **kwargs: Additional keyword arguments for pairwise_distances function.
+    Parameters
+    ----------
+    fdf : FlowDataFrame, optional
+        The input flow dataframe
+    dis_matrix : np.ndarray, optional
+        Pre-computed distance matrix with shape (N, N). If None, it will be calculated
+    distance : str, optional
+        The distance metric type used, by default 'max'
+    k : int, optional
+        The k-th nearest neighbor to consider, by default 1
+    mask : GeoSeries or geometric object, optional
+        The GeoSeries (elementwise) or geometric object to test if each flow is within.
+        If None, all flows are used
+    **kwargs
+        Additional keyword arguments for pairwise_distances function
 
-    Returns:
-        float: The calculated second-order density.
+    Returns
+    -------
+    float
+        The calculated second-order density
+
+    Raises
+    ------
+    AssertionError
+        If distance matrix is not square
     """
     if dis_matrix is None:
         dis_matrix = pairwise_distances(fdf, distance=distance, **kwargs)
@@ -98,25 +132,35 @@ def second_order_density(fdf: FlowDataFrame=None, dis_matrix=None, distance='max
 
 
 def _params_for_kl_func(fdf: FlowDataFrame, dr, k=1, distance='max', dis_matrix=None, mask=None, **kwargs):
-    """
-    Calculate parameters for K and L functions.
+    """Calculate parameters for K and L functions.
 
-    Parameters:
-        fdf (FlowDataFrame): The input flow dataframe.
-        dr (float): The step size for distance intervals.
-        k (int, optional): The Nth nearest neighbors for each flow to calculate the density. Default is 1.
-        distance (str): The distance metric to use. Default is 'max'.
-        dis_matrix (np.ndarray, optional): Pre-computed distance matrix. If None, it will be calculated.
-        mask (GeoSeries or geometric object, optional): The GeoSeries (elementwise) or geometric object to test if each flow is within. Default is None, which means all flows are used.
-        **kwargs: Additional keyword arguments for pairwise_distances function.
+    Parameters
+    ----------
+    fdf : FlowDataFrame
+        The input flow dataframe
+    dr : float
+        The step size for distance intervals
+    k : int, optional
+        The Nth nearest neighbors for each flow to calculate the density, by default 1
+    distance : str, optional
+        The distance metric to use, by default 'max'
+    dis_matrix : np.ndarray, optional
+        Pre-computed distance matrix. If None, it will be calculated
+    mask : GeoSeries or geometric object, optional
+        The GeoSeries (elementwise) or geometric object to test if each flow is within.
+        If None, all flows are used
+    **kwargs
+        Additional keyword arguments for pairwise_distances function
 
-    Returns:
-        tuple: A tuple containing:
-            - flow_num (int): Number of flows.
-            - density (float): Second-order density of flows.
-            - interval_num (int): Number of distance intervals.
-            - mask (np.ndarray): Boolean mask for flows.
-            - dis_matrix (np.ndarray): Distance matrix between flows.
+    Returns
+    -------
+    tuple
+        A tuple containing:
+        - flow_num (int): Number of flows
+        - density (float): Second-order density of flows
+        - interval_num (int): Number of distance intervals
+        - mask (np.ndarray): Boolean mask for flows
+        - dis_matrix (np.ndarray): Distance matrix between flows
     """
     flow_num = fdf.shape[0]
     bounds = fdf.total_bounds
@@ -138,32 +182,46 @@ def _params_for_kl_func(fdf: FlowDataFrame, dr, k=1, distance='max', dis_matrix=
 
 
 def k_func(fdf: FlowDataFrame, dr, k=1, distance='max', dis_matrix: np.ndarray=None, mask=None, **kwargs):
-    """
-    Calculate the K function for flow data.
+    """Calculate the K function for flow data.
 
     The K function is a measure of spatial clustering or dispersion in point patterns,
     adapted here for flow data.
 
-    Parameters:
-        fdf (FlowDataFrame): The input flow dataframe.
-        dr (float): The step size for distance intervals.
-        k (int, optional): The Nth nearest neighbors for each flow to calculate the density. Default is 1.
-        distance (str, optional): The distance metric to use. Default is 'max'.
-        dis_matrix (np.ndarray, optional): Pre-computed distance matrix. If None, it will be calculated.
-        mask (GeoSeries or geometric object, optional): The GeoSeries (elementwise) or geometric object to test if each flow is within. Default is None, which means all flows are used.
-        **kwargs: Additional keyword arguments for pairwise_distances function.
+    Parameters
+    ----------
+    fdf : FlowDataFrame
+        The input flow dataframe
+    dr : float
+        The step size for distance intervals
+    k : int, optional
+        The Nth nearest neighbors for each flow to calculate the density, by default 1
+    distance : str, optional
+        The distance metric to use, by default 'max'
+    dis_matrix : np.ndarray, optional
+        Pre-computed distance matrix. If None, it will be calculated
+    mask : GeoSeries or geometric object, optional
+        The GeoSeries (elementwise) or geometric object to test if each flow is within.
+        If None, all flows are used
+    **kwargs
+        Additional keyword arguments for pairwise_distances function
 
-    Returns:
-        tuple: A tuple containing two numpy arrays:
-            - r_list (np.ndarray): Array of distance values.
-            - kr_list (np.ndarray): Array of K function values corresponding to each distance.
+    Returns
+    -------
+    tuple
+        A tuple containing two numpy arrays:
+        - r_list (np.ndarray): Array of distance values
+        - kr_list (np.ndarray): Array of K function values corresponding to each distance
 
-    Note:
-        The K function for flows is calculated as K(r) = (number of flows within distance r) / (flow density),
-        where flow density is the second-order density of flows in the study area.
-        
-    Reference:
-        Tao R, Thill J C. Spatial cluster detection in spatial flow data[J]. Geographical Analysis, 2016,48(4):355-372.
+    Notes
+    -----
+    The K function for flows is calculated as:
+    K(r) = (number of flows within distance r) / (flow density)
+    where flow density is the second-order density of flows in the study area
+
+    References
+    ----------
+    Tao R, Thill J C. Spatial cluster detection in spatial flow data[J].
+    Geographical Analysis, 2016,48(4):355-372.
     """
     flow_num, density, interval_num, mask, dis_matrix = _params_for_kl_func(fdf, dr, k=k,  
                                                                             distance=distance, 
@@ -181,32 +239,47 @@ def k_func(fdf: FlowDataFrame, dr, k=1, distance='max', dis_matrix: np.ndarray=N
 
 
 def l_func(fdf: FlowDataFrame, dr, k=1, distance='max', dis_matrix: np.ndarray=None, mask=None, **kwargs):
-    """
-    Calculate the L function for flow data.
+    """Calculate the L function for flow data.
 
-    The L function is a variant of Ripley's K function, transformed to have a 
+    The L function is a variant of Ripley's K function, transformed to have a
     constant variance and expectation of zero under complete spatial randomness.
 
-    Parameters:
-        fdf (FlowDataFrame): The input flow dataframe.
-        dr (float): The step size for distance intervals.
-        k (int, optional): The Nth nearest neighbors for each flow to calculate the density. Default is 1.
-        distance (str, optional): The distance metric to use. Default is 'max'.
-        dis_matrix (np.ndarray, optional): Pre-computed distance matrix. If None, it will be calculated.
-        mask (GeoSeries or geometric object, optional): The GeoSeries (elementwise) or geometric object to test if each flow is within. Default is None, which means all flows are used.
-        **kwargs: Additional keyword arguments for pairwise_distances function.
+    Parameters
+    ----------
+    fdf : FlowDataFrame
+        The input flow dataframe
+    dr : float
+        The step size for distance intervals
+    k : int, optional
+        The Nth nearest neighbors for each flow to calculate the density, by default 1
+    distance : str, optional
+        The distance metric to use, by default 'max'
+    dis_matrix : np.ndarray, optional
+        Pre-computed distance matrix. If None, it will be calculated
+    mask : GeoSeries or geometric object, optional
+        The GeoSeries (elementwise) or geometric object to test if each flow is within.
+        If None, all flows are used
+    **kwargs
+        Additional keyword arguments for pairwise_distances function
 
-    Returns:
-        tuple: A tuple containing two numpy arrays:
-            - r_list (np.ndarray): Array of distance values.
-            - lr_list (np.ndarray): Array of L function values corresponding to each distance.
+    Returns
+    -------
+    tuple
+        A tuple containing two numpy arrays:
+        - r_list (np.ndarray): Array of distance values
+        - lr_list (np.ndarray): Array of L function values corresponding to each distance
 
-    Note:
-        The L function is defined as L(r) = sqrt(K(r) / pi) - r, where K(r) is the K function.
-        Positive values of L(r) indicate clustering, while negative values indicate dispersion.
-    
-    Reference:
-        Shu, H., et al., 2021. L-function of geographical flows, International Journal of Geographical Information Science, 35 (4), 689–716.
+    Notes
+    -----
+    The L function is defined as:
+    L(r) = sqrt(K(r) / pi) - r
+    where K(r) is the K function.
+    Positive values of L(r) indicate clustering, while negative values indicate dispersion.
+
+    References
+    ----------
+    Shu, H., et al., 2021. L-function of geographical flows,
+    International Journal of Geographical Information Science, 35 (4), 689–716.
     """
     flow_num, density, interval_num, mask, dis_matrix = _params_for_kl_func(fdf, dr, k=k,  
                                                                             distance=distance, 
@@ -225,27 +298,37 @@ def l_func(fdf: FlowDataFrame, dr, k=1, distance='max', dis_matrix: np.ndarray=N
 
 
 def local_l_func(fdf, r, distance='max', dis_matrix: np.ndarray=None, **kwargs):
-    """
-    Calculate the local L function for flow data.
+    """Calculate the local L function for flow data.
 
     The local L function is a localized version of the L function, computed for each individual flow.
 
-    Parameters:
-        fdf (FlowDataFrame): The input flow dataframe.
-        r (float): The radius for which to calculate the local L function.
-        distance (str, optional): The distance metric to use. Default is 'max'.
-        dis_matrix (np.ndarray, optional): Pre-computed distance matrix. If None, it will be calculated.
-        **kwargs: Additional keyword arguments for pairwise_distances function.
+    Parameters
+    ----------
+    fdf : FlowDataFrame
+        The input flow dataframe
+    r : float
+        The radius for which to calculate the local L function
+    distance : str, optional
+        The distance metric to use, by default 'max'
+    dis_matrix : np.ndarray, optional
+        Pre-computed distance matrix. If None, it will be calculated
+    **kwargs
+        Additional keyword arguments for pairwise_distances function
 
-    Returns:
-        np.ndarray: An array of local L function values for each flow.
+    Returns
+    -------
+    np.ndarray
+        An array of local L function values for each flow
 
-    Note:
-        The local L function helps identify local clustering or dispersion patterns around individual flows.
-        Positive values indicate local clustering, while negative values indicate local dispersion.
-    
-    Reference:
-        Shu, H., et al., 2021. L-function of geographical flows, International Journal of Geographical Information Science, 35 (4), 689–716.
+    Notes
+    -----
+    The local L function helps identify local clustering or dispersion patterns around individual flows.
+    Positive values indicate local clustering, while negative values indicate local dispersion.
+
+    References
+    ----------
+    Shu, H., et al., 2021. L-function of geographical flows,
+    International Journal of Geographical Information Science, 35 (4), 689–716.
     """
     flow_num = fdf.shape[0]
     if dis_matrix is None:

@@ -1,6 +1,6 @@
 import shapely
-from shapely.errors import EmptyPartError
 from shapely.geometry import point
+from shapely.errors import EmptyPartError
 from shapely.geometry.base import BaseMultipartGeometry
 
 __all__ = ["Flow"]
@@ -28,33 +28,33 @@ class Flow(BaseMultipartGeometry):
     Construct a Flow containing two Points
 
     >>> from shapely import Point
-    >>> ob = Flow([[0.0, 0.0], [1.0, 2.0]])
-    >>> len(ob.geoms)
+    >>> flow = Flow([[0.0, 0.0], [1.0, 2.0]])
+    >>> len(flow.geoms)
     2
-    >>> type(ob.geoms[0]) == Point
+    >>> type(flow.geoms[0]) == Point
     True
     """
 
     __slots__ = []
 
-    def __new__(self, points=None):
-        if points is None:
+    def __new__(self, od_points=None):
+        if od_points is None:
             # allow creation of empty Flows, to support unpickling
             # TODO better empty constructor
             return shapely.from_wkt("Flow EMPTY")
-        elif isinstance(points, Flow):
-            return points
+        elif isinstance(od_points, Flow):
+            return od_points
 
-        m = len(points)
+        m = len(od_points)
         assert m == 2, "A Flow must have exactly two points"
         subs = []
         for i in range(m):
-            p = point.Point(points[i])
+            p = point.Point(od_points[i])
             if p.is_empty:
                 raise EmptyPartError("Can't create Flow with empty component")
             subs.append(p)
 
-        if len(points) == 0:
+        if len(od_points) == 0:
             return shapely.from_wkt("Flow EMPTY")
 
         return shapely.multipoints(subs)
@@ -93,7 +93,5 @@ class Flow(BaseMultipartGeometry):
 shapely.lib.registry[4] = Flow
 
 
-if __name__ == "__main__":
-    flow = Flow([[0, 0], [1, 1]])
-    print(flow, type(flow))
+
 
