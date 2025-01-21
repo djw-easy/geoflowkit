@@ -2,7 +2,7 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import LineString, MultiPoint
 
-from geoflow.flowdataframe import FlowDataFrame, geometry_to_flow
+from geoflow.flowdataframe import FlowDataFrame
 
 
 
@@ -31,21 +31,21 @@ def read_csv(file_path, use_cols, crs=None, **kwargs) -> FlowDataFrame:
     return FlowDataFrame(df, geometry=geometry, crs=crs)
 
 
-def read_file(file_path) -> FlowDataFrame:
-    """
-    Read GeoFlow data from a file.
+# def read_file(file_path) -> FlowDataFrame:
+#     """
+#     Read GeoFlow data from a file.
     
-    Parameters:
-    -----------
-    file_path (str): The path to the file.
+#     Parameters:
+#     -----------
+#     file_path (str): The path to the file.
     
-    Returns:
-    --------
-    FlowDataFrame: The GeoFlow data.
-    """
-    gdf = gpd.read_file(file_path)
-    gdf['geometry'] = geometry_to_flow(gdf['geometry'])
+#     Returns:
+#     --------
+#     FlowDataFrame: The GeoFlow data.
+#     """
+#     gdf = gpd.read_file(file_path)
+#     gdf['geometry'] = geometry_to_flow(gdf['geometry'])
     
-    return FlowDataFrame(gdf)
+#     return FlowDataFrame(gdf)
 
 

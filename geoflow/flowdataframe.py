@@ -13,6 +13,8 @@ from geopandas.geodataframe import _ensure_geometry
 import matplotlib.pyplot as plt
 from shapely.geometry import LineString, Point, MultiPoint
 
+from flowseries import FlowSeries
+
 
 crs_mismatch_error = (
     "CRS mismatch between CRS of the passed geometries "
@@ -49,7 +51,7 @@ def geometry_to_flow(geometry):
     UserWarning
         If any LineString has more than two points.
     """
-    if not all(isinstance(geom, LineString) for geom in geometry):
+    if not all(isinstance(geom, (LineString, MultiPoint)) for geom in geometry):
         raise ValueError("All geometries must be LineString type")
 
     warning_issued = False
@@ -79,13 +81,19 @@ class FlowDataFrame(GeoDataFrame):
 
     def __init__(self, data=None, *args, geometry=None, use_cols=None, crs=None, **kwargs):
         # Handle internal pandas operations where data is already a GeoDataFrame or has geometry
-        if isinstance(data, (GeoDataFrame, FlowDataFrame)) or (
+        if isinstance(data, GeoDataFrame) or (
             isinstance(data, DataFrame) and 'geometry' in data.columns
         ):
             geometry = getattr(data, 'geometry', data.get('geometry'))
             geometry = _ensure_geometry(geometry, crs=crs or getattr(data, 'crs', None))
             geometry = geometry_to_flow(geometry)
             kwargs.pop('geometry', None)
+            super().__init__(data, *args, geometry=geometry, crs=crs or getattr(data, 'crs', None), **kwargs)
+            return
+        
+        if isinstance(data, FlowDataFrame):
+            geometry = data.geometry
+            data = data.drop(columns=['geometry'])
             super().__init__(data, *args, geometry=geometry, crs=crs or getattr(data, 'crs', None), **kwargs)
             return
 
@@ -146,16 +154,17 @@ class FlowDataFrame(GeoDataFrame):
                 result.__class__ = FlowDataFrame
             return result
         return super().__getitem__(key)
-    
-    def __finalize__(self, other, method=None, **kwargs):
-        result = super().__finalize__(other, method=method, **kwargs)
-        if isinstance(result, GeoDataFrame) and not isinstance(result, FlowDataFrame):
-            result.__class__ = FlowDataFrame
-        return result
 
     @property
     def _constructor(self):
+        """Override pandas/geopandas internal constructor"""
         return FlowDataFrame
+        
+    @property
+    def _constructor_sliced(self):
+        """Override pandas/geopandas internal constructor for sliced operations"""
+        from pandas import Series
+        return Series
 
     def check_geographic_crs(self, stacklevel):
         """Check CRS and warn if the planar operation is done in a geographic CRS"""
