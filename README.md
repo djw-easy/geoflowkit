@@ -13,7 +13,7 @@ similar to `geopandas.GeoSeries` and `geopandas.FlowDataFrame`.
 GeoFlow objects can act on [shapely](http://shapely.readthedocs.io/en/latest/)
 geometry objects and perform geographical flow operations.
 
-Note:
+Notes:
 
     - Most functionality is adapted from GeoDataFrame and GeoSeries. 
     - Direct inheritance from GeoDataFrame is avoided due to some unique properties of flow. 
