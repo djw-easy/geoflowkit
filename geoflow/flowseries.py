@@ -15,10 +15,10 @@ from pandas.core.internals import SingleBlockManager
 
 
 from geoflow.flow import Flow
+from geoflow.base import FlowBase
 
 
-
-class FlowSeries(Series, GeoPandasBase):
+class FlowSeries(FlowBase, GeoPandasBase, Series):
     """
     A Series object designed to store Flow objects exclusively.
     All data in this series must be instances of Flow class.
@@ -152,30 +152,6 @@ class FlowSeries(Series, GeoPandasBase):
         return FlowSeries(
             gs, crs=gs.crs
         )
-        
-    @property
-    def o(self) -> GeoSeries:
-        """
-        Get the origin points of the flow.
-
-        Returns
-        -------
-        origin_points : GeoSeries
-            The origin points of the flow.
-        """
-        return self.geometry.get_geometry(0)
-    
-    @property
-    def d(self) -> GeoSeries:
-        """
-        Get the destination points of the flow.
-
-        Returns
-        -------
-        destination_points : GeoSeries
-            The destination points of the flow.
-        """
-        return self.geometry.get_geometry(1)
     
     def plot(self, ax=None, C=None, figsize=None, **kwargs) -> plt.Axes:
         """

@@ -88,6 +88,14 @@ class Flow(BaseMultipartGeometry):
             + "".join(p.svg(scale_factor, fill_color, opacity) for p in self.geoms)
             + "</g>"
         )
+        
+    @property
+    def o(self):
+        return self.geoms[0]
+    
+    @property
+    def d(self):
+        return self.geoms[1]
 
 
 shapely.lib.registry[4] = Flow

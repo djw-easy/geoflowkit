@@ -15,6 +15,7 @@ from geopandas.array import GeometryArray, GeometryDtype
 
 
 from geoflow.flow import Flow
+from geoflow.base import FlowBase
 from geoflow.flowseries import FlowSeries
 
 
@@ -66,7 +67,7 @@ def _ensure_geometry(data, crs=None):
             raise TypeError("All elements must be Flow objects")
 
 
-class FlowDataFrame(DataFrame, GeoPandasBase):
+class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
     """
     A DataFrame subclass for handling flow data with geographic operations.
 
@@ -370,22 +371,7 @@ class FlowDataFrame(DataFrame, GeoPandasBase):
     
     @property
     def _constructor_sliced(self):
-        def _geodataframe_constructor_sliced(*args, **kwargs):
-            """
-            A specialized (Geo)Series constructor which can fall back to a
-            Series if a certain operation does not produce geometries:
-
-            - We only return a GeoSeries if the data is actually of geometry
-              dtype (and so we don't try to convert geometry objects such as
-              the normal GeoSeries(..) constructor does with `_ensure_geometry`).
-            - When we get here from obtaining a row or column from a
-              GeoDataFrame, the goal is to only return a GeoSeries for a
-              geometry column, and not return a GeoSeries for a row that happened
-              to come from a DataFrame with only geometry dtype columns (and
-              thus could have a geometry dtype). Therefore, we don't return a
-              GeoSeries if we are sure we are in a row selection case (by
-              checking the identity of the index)
-            """
+        def _flowdataframe_constructor_sliced(*args, **kwargs):
             srs = pd.Series(*args, **kwargs)
             is_row_proxy = srs.index.is_(self.columns)
             if is_geometry_type(srs) and not is_row_proxy:
@@ -395,7 +381,7 @@ class FlowDataFrame(DataFrame, GeoPandasBase):
                     srs = GeoSeries(srs)
             return srs
 
-        return _geodataframe_constructor_sliced
+        return _flowdataframe_constructor_sliced
     
     def _constructor_sliced_from_mgr(self, mgr, axes):
         is_row_proxy = mgr.index.is_(self.columns)
@@ -406,17 +392,6 @@ class FlowDataFrame(DataFrame, GeoPandasBase):
             except:
                 return GeoSeries._from_mgr(mgr, axes)
         return Series._from_mgr(mgr, axes)
-
-    def check_geographic_crs(self, stacklevel):
-        """Check CRS and warn if the planar operation is done in a geographic CRS"""
-        if self.crs and self.crs.is_geographic:
-            warnings.warn(
-                "Geometry is in a geographic CRS. Results from are likely incorrect. "
-                "Use 'GeoSeries.to_crs()' to re-project geometries to a "
-                "projected CRS before this operation.\n",
-                UserWarning,
-                stacklevel=stacklevel,
-            )
             
     @GeoPandasBase.crs.setter
     def crs(self, value):
@@ -475,50 +450,6 @@ class FlowDataFrame(DataFrame, GeoPandasBase):
         allow_override : bool, default False
             If the the GeoDataFrame already has a CRS, allow to replace the
             existing CRS, even when both are not equal.
-
-        Examples
-        --------
-        >>> from shapely.geometry import Point
-        >>> d = {'col1': ['name1', 'name2'], 'geometry': [Point(1, 2), Point(2, 1)]}
-        >>> gdf = geopandas.GeoDataFrame(d)
-        >>> gdf
-            col1     geometry
-        0  name1  POINT (1 2)
-        1  name2  POINT (2 1)
-
-        Setting CRS to a GeoDataFrame without one:
-
-        >>> gdf.crs is None
-        True
-
-        >>> gdf = gdf.set_crs('epsg:3857')
-        >>> gdf.crs  # doctest: +SKIP
-        <Projected CRS: EPSG:3857>
-        Name: WGS 84 / Pseudo-Mercator
-        Axis Info [cartesian]:
-        - X[east]: Easting (metre)
-        - Y[north]: Northing (metre)
-        Area of Use:
-        - name: World - 85°S to 85°N
-        - bounds: (-180.0, -85.06, 180.0, 85.06)
-        Coordinate Operation:
-        - name: Popular Visualisation Pseudo-Mercator
-        - method: Popular Visualisation Pseudo Mercator
-        Datum: World Geodetic System 1984
-        - Ellipsoid: WGS 84
-        - Prime Meridian: Greenwich
-
-        Overriding existing CRS:
-
-        >>> gdf = gdf.set_crs(4326, allow_override=True)
-
-        Without ``allow_override=True``, ``set_crs`` returns an error if you try to
-        override CRS.
-
-        See also
-        --------
-        GeoDataFrame.to_crs : re-project to another CRS
-
         """
         if not inplace:
             df = self.copy()
@@ -528,6 +459,97 @@ class FlowDataFrame(DataFrame, GeoPandasBase):
             crs=crs, epsg=epsg, allow_override=allow_override, inplace=True
         )
         return df
+    
+    def to_file(self, filename, driver=None, schema=None, index=None, **kwargs):
+        """Convert the FlowDataFrame to ``GeoDataFrame``, then write it to a file.
+
+        By default, an ESRI shapefile is written, but any OGR data source
+        supported by Pyogrio or Fiona can be written. A dictionary of supported OGR
+        providers is available via:
+
+        >>> import pyogrio
+        >>> pyogrio.list_drivers()  # doctest: +SKIP
+
+        Parameters
+        ----------
+        filename : string
+            File path or file handle to write to. The path may specify a
+            GDAL VSI scheme.
+        driver : string, default None
+            The OGR format driver used to write the vector file.
+            If not specified, it attempts to infer it from the file extension.
+            If no extension is specified, it saves ESRI Shapefile to a folder.
+        schema : dict, default None
+            If specified, the schema dictionary is passed to Fiona to
+            better control how the file is written. If None, GeoPandas
+            will determine the schema based on each column's dtype.
+            Not supported for the "pyogrio" engine.
+        index : bool, default None
+            If True, write index into one or more columns (for MultiIndex).
+            Default None writes the index into one or more columns only if
+            the index is named, is a MultiIndex, or has a non-integer data
+            type. If False, no index is written.
+
+            .. versionadded:: 0.7
+                Previously the index was not written.
+        mode : string, default 'w'
+            The write mode, 'w' to overwrite the existing file and 'a' to append.
+            Not all drivers support appending. The drivers that support appending
+            are listed in fiona.supported_drivers or
+            https://github.com/Toblerity/Fiona/blob/master/fiona/drvsupport.py
+        crs : pyproj.CRS, default None
+            If specified, the CRS is passed to Fiona to
+            better control how the file is written. If None, GeoPandas
+            will determine the crs based on crs df attribute.
+            The value can be anything accepted
+            by :meth:`pyproj.CRS.from_user_input() <pyproj.crs.CRS.from_user_input>`,
+            such as an authority string (eg "EPSG:4326") or a WKT string. The keyword
+            is not supported for the "pyogrio" engine.
+        engine : str, "pyogrio" or "fiona"
+            The underlying library that is used to write the file. Currently, the
+            supported options are "pyogrio" and "fiona". Defaults to "pyogrio" if
+            installed, otherwise tries "fiona".
+        metadata : dict[str, str], default None
+            Optional metadata to be stored in the file. Keys and values must be
+            strings. Supported only for "GPKG" driver.
+        **kwargs :
+            Keyword args to be passed to the engine, and can be used to write
+            to multi-layer data, store data within archives (zip files), etc.
+            In case of the "pyogrio" engine, the keyword arguments are passed to
+            `pyogrio.write_dataframe`. In case of the "fiona" engine, the keyword
+            arguments are passed to fiona.open`. For more information on possible
+            keywords, type: ``import pyogrio; help(pyogrio.write_dataframe)``.
+
+        Notes
+        -----
+        The format drivers will attempt to detect the encoding of your data, but
+        may fail. In this case, the proper encoding can be specified explicitly
+        by using the encoding keyword parameter, e.g. ``encoding='utf-8'``.
+
+        Examples
+        --------
+
+        >>> fdf.to_file('dataframe.shp')  # doctest: +SKIP
+
+        >>> fdf.to_file('dataframe.gpkg', driver='GPKG', layer='name')  # doctest: +SKIP
+
+        >>> fdf.to_file('dataframe.geojson', driver='GeoJSON')  # doctest: +SKIP
+
+        With selected drivers you can also append to a file with `mode="a"`:
+
+        >>> fdf.to_file('dataframe.shp', mode="a")  # doctest: +SKIP
+
+        Using the engine-specific keyword arguments it is possible to e.g. create a
+        spatialite file with a custom layer name:
+
+        >>> fdf.to_file(
+        ...     'dataframe.sqlite', driver='SQLite', spatialite=True, layer='test'
+        ... )  # doctest: +SKIP
+
+        """
+        from geopandas.io.file import _to_file
+        gdf = gpd.GeoDataFrame(self)
+        _to_file(gdf, filename, driver, schema, index, **kwargs)
 
     def to_crs(self, crs=None, epsg=None, inplace=False):
         """Transform geometries to a new coordinate reference system.
@@ -557,53 +579,6 @@ class FlowDataFrame(DataFrame, GeoPandasBase):
         Returns
         -------
         GeoDataFrame
-
-        Examples
-        --------
-        >>> from shapely.geometry import Point
-        >>> d = {'col1': ['name1', 'name2'], 'geometry': [Point(1, 2), Point(2, 1)]}
-        >>> gdf = geopandas.GeoDataFrame(d, crs=4326)
-        >>> gdf
-            col1     geometry
-        0  name1  POINT (1 2)
-        1  name2  POINT (2 1)
-        >>> gdf.crs  # doctest: +SKIP
-        <Geographic 2D CRS: EPSG:4326>
-        Name: WGS 84
-        Axis Info [ellipsoidal]:
-        - Lat[north]: Geodetic latitude (degree)
-        - Lon[east]: Geodetic longitude (degree)
-        Area of Use:
-        - name: World
-        - bounds: (-180.0, -90.0, 180.0, 90.0)
-        Datum: World Geodetic System 1984
-        - Ellipsoid: WGS 84
-        - Prime Meridian: Greenwich
-
-        >>> gdf = gdf.to_crs(3857)
-        >>> gdf
-            col1                       geometry
-        0  name1  POINT (111319.491 222684.209)
-        1  name2  POINT (222638.982 111325.143)
-        >>> gdf.crs  # doctest: +SKIP
-        <Projected CRS: EPSG:3857>
-        Name: WGS 84 / Pseudo-Mercator
-        Axis Info [cartesian]:
-        - X[east]: Easting (metre)
-        - Y[north]: Northing (metre)
-        Area of Use:
-        - name: World - 85°S to 85°N
-        - bounds: (-180.0, -85.06, 180.0, 85.06)
-        Coordinate Operation:
-        - name: Popular Visualisation Pseudo-Mercator
-        - method: Popular Visualisation Pseudo Mercator
-        Datum: World Geodetic System 1984
-        - Ellipsoid: WGS 84
-        - Prime Meridian: Greenwich
-
-        See also
-        --------
-        GeoDataFrame.set_crs : assign CRS without re-projection
         """
         if inplace:
             df = self
@@ -613,74 +588,6 @@ class FlowDataFrame(DataFrame, GeoPandasBase):
         df.geometry = geom
         if not inplace:
             return df
-
-    def within(self, mask) -> pd.Series:
-        """
-        Select the flow data within the given mask.
-
-        Parameters
-        ----------
-        mask (GeoSeries or geometric object): The GeoSeries (elementwise) or geometric object to test if each flow is within.
-
-        Returns
-        -------
-        mask (pd.Series): A boolean Series indicating whether each flow is within the mask.
-        """
-        is_start_within = self.o.within(mask)
-        is_end_within = self.d.within(mask)
-        mask = is_start_within & is_end_within
-        
-        return mask
-    
-    @property
-    def volume(self) -> float:
-        """
-        Calculate the volume of the flow space.
-
-        Returns
-        -------
-        volume : float
-            The volume of the flow space.
-        """
-        self.check_geographic_crs(3)
-        bounds = self.total_bounds
-        return (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
-
-    @property
-    def density(self) -> float:
-        """
-        Calculate the density of the flow space.
-
-        Returns
-        -------
-        density : float
-            The density of the flow space.
-        """
-        return len(self) / self.volume
-    
-    @property
-    def o(self) -> GeoSeries:
-        """
-        Get the origin points of the flow.
-
-        Returns
-        -------
-        origin_points : GeoSeries
-            The origin points of the flow.
-        """
-        return self.geometry.get_geometry(0)
-    
-    @property
-    def d(self) -> GeoSeries:
-        """
-        Get the destination points of the flow.
-
-        Returns
-        -------
-        destination_points : GeoSeries
-            The destination points of the flow.
-        """
-        return self.geometry.get_geometry(1)
 
     def plot(self, kind='arrow', ax=None, column=None, figsize=None, **kwargs) -> plt.Axes:
         """
