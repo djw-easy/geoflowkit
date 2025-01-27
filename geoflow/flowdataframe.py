@@ -321,10 +321,8 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         """Override to ensure type preservation during indexing"""
         # Handle column selection
         if isinstance(key, list):
-            if 'geometry' not in key:
-                key = key + ['geometry']
             result = super().__getitem__(key)
-            if isinstance(result, GeoDataFrame):
+            if isinstance(result, DataFrame):
                 result.__class__ = FlowDataFrame
             return result
         return super().__getitem__(key)
