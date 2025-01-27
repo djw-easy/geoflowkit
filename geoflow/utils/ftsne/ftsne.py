@@ -6,23 +6,19 @@ from scipy import linalg
 from typing import Optional, Union, Tuple
 
 
-from sklearn.decomposition import PCA
 from shapely import get_coordinates
+from sklearn.decomposition import PCA
 from scipy.spatial.distance import squareform
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
-from sklearn.manifold._t_sne import (
-    _joint_probabilities, 
-    _kl_divergence, 
-    _kl_divergence_bh
-)
-from sklearn.utils._openmp_helpers import _openmp_effective_n_threads
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.manifold._t_sne import _joint_probabilities
 
 
 from geoflow.flowdataframe import FlowDataFrame
 from geoflow.utils.ftsne.utils import (
-    d2p, get_multivariate_p_cond, 
-    inv_sd, inv_d2q, d2q, 
+    binary_search_perplexity, 
+    get_multivariate_p_cond, 
     kl_divergence, kl_grad
 )
 
@@ -218,14 +214,17 @@ class FTSNE:
         
         # Check identity mapping
         if identity is not None:
-            for attr, dim in identity.items():
+            for attr, dims_tuple in identity.items():
                 if attr not in valid_attrs:
                     raise ValueError(f"Invalid identity attribute: {attr}")
-                if not isinstance(dim, int):
-                    raise ValueError(f"Identity dimension must be integer, got {type(dim)}")
-                if dim in dims:
-                    raise ValueError(f"Duplicate identity dimension: {dim}")
-                dims.add(dim)
+                if isinstance(dims_tuple, (tuple, list)):
+                    assert len(set(dims_tuple)) == len(dims_tuple), f"Duplicate identity dimension: {dims_tuple}"
+                    for dim in dims_tuple:
+                        if dim in dims:
+                            raise ValueError(f"Duplicate identity dimension: {dim}")
+                    dims.update(dims_tuple)
+                if isinstance(dims_tuple, int):
+                    dims.add(dims_tuple)
                 
         # Check intersection mapping
         if intersection is not None:
@@ -237,7 +236,8 @@ class FTSNE:
                         raise ValueError(f"Invalid intersection attribute: {attr}")
                 if isinstance(dims_tuple, int):
                     dims.add(dims_tuple)
-                elif isinstance(dims_tuple, tuple):
+                elif isinstance(dims_tuple, (tuple, list)):
+                    assert len(set(dims_tuple)) == len(dims_tuple), f"Duplicate identity dimension: {dims_tuple}"
                     dims.update(dims_tuple)
                 else:
                     raise ValueError(f"Intersection value must be int or tuple, got {type(dims_tuple)}")
@@ -252,7 +252,8 @@ class FTSNE:
                         raise ValueError(f"Invalid union attribute: {attr}")
                 if isinstance(dims_tuple, int):
                     dims.add(dims_tuple)
-                elif isinstance(dims_tuple, tuple):
+                elif isinstance(dims_tuple, (tuple, list)):
+                    assert len(set(dims_tuple)) == len(dims_tuple), f"Duplicate identity dimension: {dims_tuple}"
                     dims.update(dims_tuple)
                 else:
                     raise ValueError(f"Union value must be int or tuple, got {type(dims_tuple)}")
@@ -359,9 +360,16 @@ class FTSNE:
             if identity is not None:
                 for attr, dim in identity.items():
                     values = self._get_values(fdf, attr)
-                    pca = PCA(n_components=1, random_state=self.random_state)
-                    embedding[:, dim] = pca.fit_transform(values).flatten()
-                    identity_used_dims.add(dim)
+                    if isinstance(dim, int):
+                        pca = PCA(n_components=1, random_state=self.random_state)
+                        embedding[:, dim] = pca.fit_transform(values).flatten()
+                        identity_used_dims.add(dim)
+                    else:
+                        poly = PolynomialFeatures(degree=len(dim))
+                        transformed = poly.fit_transform(values)
+                        for i, d in enumerate(dim):
+                            embedding[:, d] = transformed[:, i]
+                            identity_used_dims.add(d)
                     if self.verbose > 1:
                         print(f"Reducing {attr} to dimension {dim} using PCA")
             
@@ -479,16 +487,18 @@ class FTSNE:
                         values = np.concatenate([np.cos(values), np.sin(values)], axis=1) 
                 if metric == "haversine":
                     assert values.shape[1]==2, "Haversine distance only works for 2D data"
-                    if np.min(values) < -2*np.pi or np.max(values) > 2*np.pi:
+                    if fdf.crs.is_geographic:
                         values = np.radians(values)
+                    else:
+                        raise ValueError("Haversine distance only works for geographic data")
                 
-                if self.metric == "euclidean":
+                if metric == "euclidean":
                     distances = pairwise_distances(values, metric=metric, squared=True)
-                    attr_distances[attr] = distances
                 else:
                     metric_params_ = self.metric_params or {}
                     distances = pairwise_distances(values, metric=metric, **metric_params_)
-                    attr_distances[attr] = distances ** 2
+                    distances = distances ** 2
+                attr_distances[attr] = distances / distances.max()
         elif isinstance(fdf, dict):
             attr_distances = fdf
 
@@ -503,7 +513,7 @@ class FTSNE:
         for attrs, dims in intersection.items():
             attrs_distances = [attr_distances[attr] for attr in attrs]
             if relation == 'probability':
-                attrs_sigmas = [d2p(distances, self.perplexity)[1] for distances in attrs_distances]
+                attrs_sigmas = [binary_search_perplexity(distances, self.perplexity)[1] for distances in attrs_distances]
                 pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='intersection')
             else:
                 distances = np.concatenate(attrs_distances, axis=1)
@@ -515,7 +525,7 @@ class FTSNE:
         for attrs, dims in union.items():
             attrs_distances = [attr_distances[attr] for attr in attrs]
             if relation == 'probability':
-                attrs_sigmas = [d2p(distances, self.perplexity)[1] for distances in attrs_distances]
+                attrs_sigmas = [binary_search_perplexity(distances, self.perplexity)[1] for distances in attrs_distances]
                 pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='intersection')
             else:
                 distances = np.concatenate(attrs_distances, axis=1)
@@ -544,8 +554,9 @@ class FTSNE:
             embedding, total_error = self._gradient_descent(obj_func, embedding, pijs, projs, momentum=0.5, 
                                                             learning_rate=self.learning_rate_, 
                                                             degrees_of_freedom=degrees_of_freedom)
-            self.pbar.update(1)
-            self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {total_error:.4f}")
+            if self.verbose > 0:
+                self.pbar.update(1)
+                self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {total_error:.4f}")
 
         # Learning schedule (part 2): disable early exaggeration and finish
         # optimization with a higher momentum at 0.8
@@ -554,8 +565,9 @@ class FTSNE:
             embedding, total_error = self._gradient_descent(obj_func, embedding, pijs, projs, momentum=0.8, 
                                                             learning_rate=self.learning_rate_, 
                                                             degrees_of_freedom=degrees_of_freedom)
-            self.pbar.update(1)
-            self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {total_error:.4f}")
+            if self.verbose > 0:
+                self.pbar.update(1)
+                self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {total_error:.4f}")
 
         X_embedded = embedding.reshape(self.n_samples, self.n_components)
         self.kl_divergence_ = kl_divergence

@@ -589,7 +589,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         if not inplace:
             return df
 
-    def plot(self, kind='arrow', ax=None, column=None, figsize=None, **kwargs) -> plt.Axes:
+    def plot(self, kind='arrow', ax=None, column=None, figsize=None, zoom=0.03, **kwargs) -> plt.Axes:
         """
         Plot the flow data.
 
@@ -604,6 +604,8 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             The name of the column to be used for coloring the arrows when kind='arrow'.
         figsize : tuple, optional
             The size of the figure to create in inches (width, height).
+        zoom : float, optional, default: 0.03
+            The zoom level for the plot.
         **kwargs : dict
             Additional keyword arguments to be passed to the plotting function.
 
@@ -634,6 +636,10 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             from shapely import get_coordinates
             origins = get_coordinates(self.o)
             destinations = get_coordinates(self.d)
+            min_x = min(np.min(origins[:, 0]), np.min(destinations[:, 0]))
+            max_x = max(np.max(origins[:, 0]), np.max(destinations[:, 0]))
+            min_y = min(np.min(origins[:, 1]), np.min(destinations[:, 1]))
+            max_y = max(np.max(origins[:, 1]), np.max(destinations[:, 1]))
             u = destinations[:, 0] - origins[:, 0]
             v = destinations[:, 1] - origins[:, 1]
 
@@ -649,6 +655,12 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
                 ax.quiver(origins[:, 0], origins[:, 1], u, v, C, **quiver_kwargs)
             else:
                 ax.quiver(origins[:, 0], origins[:, 1], u, v, **quiver_kwargs)
+            x_eps = zoom * (max_x - min_x)
+            ax.set_xlim(min_x - x_eps, max_x + x_eps)
+            ax.set_xlim(auto=True)
+            y_eps = zoom * (max_y - min_y)
+            ax.set_ylim(min_y - y_eps, max_y + y_eps)
+            ax.set_ylim(auto=True)
             return ax
         else:
             return super().plot(kind=kind, ax=ax, figsize=figsize, **kwargs)

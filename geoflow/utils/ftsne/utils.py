@@ -4,71 +4,50 @@ from scipy.spatial.distance import pdist, squareform
 
 
 
-# @numba.jit(nopython=True, error_model='numpy')          # https://github.com/numba/numba/issues/4360
-def Hbeta(D, beta):
-
-    P = np.exp(-D * beta)
+@numba.jit(nopython=True, error_model='numpy')
+def _entropy(distance, sigma):
+    P = np.exp(-distance * sigma)
     sumP = np.sum(P)
     P = P / sumP
-    H = np.log(sumP) + beta * np.sum(D * P)
-    
+    H = np.log(sumP) + sigma * np.sum(distance * P)
     return H, P
 
-# @numba.jit(nopython=True)
-def d2p_job(Di, logU, max_iteration=200, tol=1e-4):
+
+@numba.jit(nopython=True)
+def _binary_search(distance, target_entropy, max_iteration=200, tol=1e-5):
     beta = 1.0
     beta_min = -np.inf
     beta_max = np.inf
     
-    H, thisP = Hbeta(Di, beta)
-    Hdiff = H - logU
+    Shannon_entropy, thisP = _entropy(distance, beta)
+    entropy_diff = Shannon_entropy - target_entropy
 
     tries = 0
-    while tries < max_iteration and np.abs(Hdiff) > tol:
+    while tries < max_iteration and np.abs(entropy_diff) > tol:
         # If not, increase or decrease precision
-        if Hdiff > 0:
+        if entropy_diff > 0:
             beta_min = beta
-            if np.isinf(beta_max):      # Numba compatibility: isposinf --> isinf
+            if np.isinf(beta_max):
                 beta *= 2.
             else:
                 beta = (beta + beta_max) / 2.
         else:
             beta_max = beta
-            if np.isinf(beta_min):      # Numba compatibility: isneginf --> isinf
+            if np.isinf(beta_min):
                 beta /= 2. 
             else:
                 beta = (beta + beta_min) / 2.
 
-        H, thisP = Hbeta(Di, beta)
-        Hdiff = H - logU
+        Shannon_entropy, thisP = _entropy(distance, beta)
+        entropy_diff = Shannon_entropy - target_entropy
         tries += 1
 
     return thisP, beta
 
-def d2p(D, perplexity):
-    n = D.shape[0]
-    logU = np.log(perplexity)
-
-    idx = (1 - np.eye(n)).astype(bool)
-    D = D[idx].reshape((n, -1))
-
-    betas = np.zeros(n)
-    P = np.zeros([n, n])
-    for i in range(n):
-        P[i, idx[i]], betas[i] = d2p_job(D[i], logU)
-
-    P[np.isnan(P)] = 0
-    P = P + P.T
-    P = P / P.sum()
-    P = np.maximum(P, 1e-12)
-
-    return P, betas
-
-
 
 def binary_search_perplexity(distances, perplexity):
     """
-    Computes the sigmas from given distances with a certain perplexity.
+    Computes the joint probability and sigmas from given distances with a certain perplexity.
 
     Parameters
     ----------
@@ -80,11 +59,28 @@ def binary_search_perplexity(distances, perplexity):
     
     Returns
     -------
+    P : array, shape (n_samples, n_samples)
+        The joint probability distribution.
     sigma : array, shape (n_samples,)
         The sigmas for each sample.
     """
     n_samples = distances.shape[0]
     target_entropy = np.log(perplexity)
+
+    idx = (1 - np.eye(n_samples)).astype(bool)
+    distances_flat = distances[idx].reshape((n_samples, n_samples - 1))
+
+    sigmas = np.zeros(n_samples)
+    P = np.zeros([n_samples, n_samples])
+    for i in numba.prange(n_samples):
+        P[i, idx[i]], sigmas[i] = _binary_search(distances_flat[i], target_entropy)
+
+    P[np.isnan(P)] = 0
+    P = P + P.T
+    P = P / P.sum()
+    P = np.maximum(P, 1e-12)
+
+    return P, sigmas
 
 
 def get_multivariate_p_cond(distances_list, sigmas_list, combination='intersection', eps: float=1e-10):

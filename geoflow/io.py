@@ -31,7 +31,7 @@ def read_csv(file_path, use_cols, crs=None, **kwargs) -> FlowDataFrame:
     return FlowDataFrame(df, geometry=geometry, crs=crs)
 
 
-def read_file(file_path) -> FlowDataFrame:
+def read_file(file_path, **kwargs) -> FlowDataFrame:
     """
     Read GeoFlow data from a file.
     
@@ -43,7 +43,7 @@ def read_file(file_path) -> FlowDataFrame:
     --------
     FlowDataFrame: The GeoFlow data.
     """
-    gdf = gpd.read_file(file_path)
+    gdf = gpd.read_file(file_path, **kwargs)
     gdf['geometry'] = flows_from_geometry(gdf['geometry'])
     
     return FlowDataFrame(gdf, geometry='geometry')
