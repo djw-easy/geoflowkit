@@ -296,21 +296,18 @@ def kl_divergence(P, Q):
     return kl_divergence
 
 
-def kl_grad(embedding, P, degrees_of_freedom=1.0, compute_error=True):
+def kl_grad(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
     """
     Parameters
     ----------
     embedding : array, shape (n_samples, dim)
         Embedding (coordinates in low-dimensional map).
-
     P : array
         Conditional probability matrix. 
-
-    degrees_of_freedom : int
-        Degrees of freedom of the Student's-t distribution.
-
     compute_error: bool, default=True
         If False, the kl_divergence is not computed and returns NaN.
+    degrees_of_freedom : int
+        Degrees of freedom of the Student's-t distribution.
     """
     if P.ndim == 1:
         inv_distances = inv_sd(embedding, degrees_of_freedom)
@@ -340,6 +337,40 @@ def kl_grad(embedding, P, degrees_of_freedom=1.0, compute_error=True):
     return grad, error
 
 
+def hl_distance(P, Q):
+    """
+    Parameters
+    ----------
+    P : array
+        Conditional probability matrix.
+    Q : array
+        Joint probability matrix.
+    """
+    if P.ndim == 1:
+        hl_distance = np.square(np.sqrt(P) - np.sqrt(Q))
+    else:
+        diag_mask = np.eye(P.shape[0]).astype(bool)
+        P = P[~diag_mask]
+        Q = Q[~diag_mask]
+        hl_distance = np.square(np.sqrt(P) - np.sqrt(Q)) / 2.0
+    hl_distance = np.sum(hl_distance)
+    return hl_distance
+
+
+def hl_grad(embedding, P, compute_error=True, **kwargs):
+    """
+    Parameters
+    ----------
+    embedding : array, shape (n_samples, dim)
+        Embedding (coordinates in low-dimensional map).
+    P : array
+        Conditional probability matrix.
+    compute_error: bool, default=True
+        If False, the hl_distance is not computed and returns NaN.
+    """
+    # TODO
+
+
 class GDOptimizer:
     epoch = 0
     change = 0
@@ -366,15 +397,16 @@ class GDOptimizer:
         """
         total_error = 0.0
         grads = []
+        kwargs = {'degrees_of_freedom': degrees_of_freedom}
         proj_matrix = np.eye(embedding.shape[1])
         for pij, proj in zip(pijs, projections):
             if isinstance(proj, int):
                 proj = proj_matrix[proj: proj+1, :]
-                proj_grad, error = obj_func(embedding @ proj.T, pij, degrees_of_freedom)
+                proj_grad, error = obj_func(embedding @ proj.T, pij, **kwargs)
                 grads += [proj_grad @ proj]
             else:
                 proj = proj_matrix[proj, :]
-                proj_grad, error = obj_func(embedding @ proj.T, pij, degrees_of_freedom)
+                proj_grad, error = obj_func(embedding @ proj.T, pij, **kwargs)
                 grads += [proj_grad @ proj]
             total_error += error
         grad = sum(grads) / len(projections)
