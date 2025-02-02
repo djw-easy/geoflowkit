@@ -2,7 +2,6 @@ import time
 import warnings
 import numpy as np
 import pandas as pd
-from scipy import linalg
 from typing import Optional, Union, Tuple
 
 
@@ -10,16 +9,16 @@ from shapely import get_coordinates
 from sklearn.decomposition import PCA
 from scipy.spatial.distance import squareform
 from sklearn.metrics import pairwise_distances
-from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.manifold._t_sne import _joint_probabilities
 
 
 from geoflow.flowdataframe import FlowDataFrame
 from geoflow.utils.ftsne.utils import (
-    binary_search_perplexity, 
+    calc_optimized_p_cond, 
     get_multivariate_p_cond, 
-    kl_divergence, kl_grad
+    kl_grad, GDOptimizer
 )
 
 
@@ -147,6 +146,7 @@ class FTSNE:
         self.init = init
         self.method = method
         self.random_state = random_state
+        self.loss_func = loss_func
         self.metric = metric
         self.metric_params = metric_params
         self.log_progress = log_progress
@@ -353,6 +353,7 @@ class FTSNE:
             print("PCA initialization is not supported for precomputed input, using random initialization instead")
             return embedding
         elif self.init == 'pca':
+            scaler = MinMaxScaler()
             # Check for dimension conflicts
             identity_used_dims = set()
             
@@ -360,6 +361,7 @@ class FTSNE:
             if identity is not None:
                 for attr, dim in identity.items():
                     values = self._get_values(fdf, attr)
+                    values = scaler.fit_transform(values)
                     if isinstance(dim, int):
                         pca = PCA(n_components=1, random_state=self.random_state)
                         embedding[:, dim] = pca.fit_transform(values).flatten()
@@ -378,6 +380,7 @@ class FTSNE:
             if intersection is not None:
                 for attrs, dims_tuple in intersection.items():
                     values = self._get_values(fdf, attrs)
+                    values = scaler.fit_transform(values)
                     if isinstance(dims_tuple, int):
                         if dims_tuple in identity_used_dims:
                             if self.verbose > 1:
@@ -405,6 +408,7 @@ class FTSNE:
             if union is not None:
                 for attrs, dims_tuple in union.items():
                     values = self._get_values(fdf, attrs)
+                    values = scaler.fit_transform(values)
                     if isinstance(dims_tuple, int):
                         if dims_tuple in identity_used_dims:
                             if self.verbose > 1:
@@ -498,7 +502,8 @@ class FTSNE:
                     metric_params_ = self.metric_params or {}
                     distances = pairwise_distances(values, metric=metric, **metric_params_)
                     distances = distances ** 2
-                attr_distances[attr] = distances / distances.max()
+                # attr_distances[attr] = distances / distances.max()
+                attr_distances[attr] = distances
         elif isinstance(fdf, dict):
             attr_distances = fdf
 
@@ -513,11 +518,12 @@ class FTSNE:
         for attrs, dims in intersection.items():
             attrs_distances = [attr_distances[attr] for attr in attrs]
             if relation == 'probability':
-                attrs_sigmas = [binary_search_perplexity(distances, self.perplexity)[1] for distances in attrs_distances]
+                attrs_sigmas = [calc_optimized_p_cond(distances, self.perplexity)[1] for distances in attrs_distances]
                 pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='intersection')
+                pij = squareform(pij)
             else:
-                distances = np.concatenate(attrs_distances, axis=1)
-                distances = np.max(distances, axis=1)
+                distances = np.concatenate([distances[..., np.newaxis] for distances in attrs_distances], axis=2)
+                distances = np.max(distances, axis=2)
                 pij = _joint_probabilities(distances, self.perplexity, 0)
             pijs.append(pij)
             projections.append(dims)
@@ -525,11 +531,12 @@ class FTSNE:
         for attrs, dims in union.items():
             attrs_distances = [attr_distances[attr] for attr in attrs]
             if relation == 'probability':
-                attrs_sigmas = [binary_search_perplexity(distances, self.perplexity)[1] for distances in attrs_distances]
-                pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='intersection')
+                attrs_sigmas = [calc_optimized_p_cond(distances, self.perplexity)[1] for distances in attrs_distances]
+                pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='union')
+                pij = squareform(pij)
             else:
-                distances = np.concatenate(attrs_distances, axis=1)
-                distances = np.min(distances, axis=1)
+                distances = np.concatenate([distances[..., np.newaxis] for distances in attrs_distances], axis=2)
+                distances = np.min(distances, axis=2)
                 pij = _joint_probabilities(distances, self.perplexity, 0)
             pijs.append(pij)
             projections.append(dims)
@@ -537,60 +544,36 @@ class FTSNE:
         return self._ft_sne(embedding, pijs, projections)
 
     def _ft_sne(self, embedding, pijs, projections):
+        if self.loss_func == 'kl':
+            obj_func = kl_grad
+        else:
+            raise ValueError("Loss function must be 'kl', 'js' or 'hd'. ")
         degrees_of_freedom = max(self.n_components - 1, 1)
-        projs = []
-        for projection in projections:
-            if isinstance(projection, int):
-                projs.append(np.eye(self.n_components)[projection: projection+1, :])
-            else:
-                projs.append(np.eye(self.n_components)[projection, :])
-
-        obj_func = kl_grad
+        
         self._init_pbar(self.max_iter) if self.verbose > 0 else None
         # Learning schedule (part 1): do 250 iteration with lower momentum but
         # higher learning rate controlled via the early exaggeration parameter
         pijs = [pij * self.early_exaggeration for pij in pijs]
+        optimizer = GDOptimizer(self.learning_rate_, 0.5)
         for epoch in range(self.early_exaggeration_iter):
-            embedding, total_error = self._gradient_descent(obj_func, embedding, pijs, projs, momentum=0.5, 
-                                                            learning_rate=self.learning_rate_, 
-                                                            degrees_of_freedom=degrees_of_freedom)
-            if self.verbose > 0:
+            embedding, error = optimizer(obj_func, embedding, pijs, projections, degrees_of_freedom)
+            if self.verbose > 0 and self.pbar is not None:
                 self.pbar.update(1)
-                self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {total_error:.4f}")
+                self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {error:.4f}")
 
         # Learning schedule (part 2): disable early exaggeration and finish
         # optimization with a higher momentum at 0.8
         pijs = [pij / self.early_exaggeration for pij in pijs]
+        optimizer = GDOptimizer(self.learning_rate_, 0.8, lr_scheduler=None)
         for epoch in range(self.early_exaggeration_iter, self.max_iter):
-            embedding, total_error = self._gradient_descent(obj_func, embedding, pijs, projs, momentum=0.8, 
-                                                            learning_rate=self.learning_rate_, 
-                                                            degrees_of_freedom=degrees_of_freedom)
-            if self.verbose > 0:
+            embedding, error = optimizer(obj_func, embedding, pijs, projections, degrees_of_freedom)
+            if self.verbose > 0 and self.pbar is not None:
                 self.pbar.update(1)
-                self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {total_error:.4f}")
+                self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {error:.4f}")
 
         X_embedded = embedding.reshape(self.n_samples, self.n_components)
-        self.kl_divergence_ = kl_divergence
+        self.error_ = error
         return X_embedded
-        
-    def _gradient_descent(self, obj_func, embedding, pijs, projs, momentum=0.8, 
-                          learning_rate=200.0, degrees_of_freedom=None):
-        if not hasattr(self, 'change'):
-            # 如果没有，设置self.change为0
-            setattr(self, 'change', 0)
-
-        total_error = 0.0
-        grads = []
-        for pij, proj in zip(pijs, projs):
-            grad, error = obj_func(embedding @ proj.T, pij, degrees_of_freedom)
-            grad = grad @ proj
-            total_error += error
-            grads.append(grad)
-        grad = sum(grads) / len(projs)
-        embedding -= learning_rate * grad + momentum * self.change
-        self.change = grad
-
-        return embedding, total_error
 
 
 
