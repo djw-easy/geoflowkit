@@ -4,4 +4,6 @@ tempCodeRunnerFile.py
 temp.ipynb
 temp.py
 .pytest_cache
+dist
+geoflowkit.egg-info
 

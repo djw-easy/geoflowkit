@@ -2,9 +2,9 @@ import unittest
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-from geoflow.flow import Flow
-from geoflow.flowseries import FlowSeries
-from geoflow.flowdataframe import FlowDataFrame
+from geoflowkit.flow import Flow
+from geoflowkit.flowseries import FlowSeries
+from geoflowkit.flowdataframe import FlowDataFrame
 
 
 class TestFlowSeries(unittest.TestCase):
