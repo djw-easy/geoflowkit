@@ -1,40 +1,12 @@
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from typing import Optional, Tuple
 from scipy.spatial.distance import pdist, squareform
 
 
+EPSILON_DBL = 1e-8
+PERPLEXITY_TOLERANCE = 1e-5
 
-def entropy(p: np.ndarray, eps: float = 1e-30) -> np.ndarray:
-    """
-    Calculates the Shannon entropy for every row in a conditional probability matrix.
-    
-    Args:
-        p (np.ndarray): Conditional probability matrix, where every row sums up to 1
-        
-    Return:
-        1D array of entropies, (n_points,)
-    """
-    return -(p * np.log2(p + eps)).sum(axis=1)
-
-def get_p_cond(distances: np.ndarray, sigmas_sq: np.ndarray, mask: np.ndarray, eps: float) -> np.ndarray:
-    """
-    Calculates conditional probability distribution given distances and squared sigmas
-    
-    Args:
-        distances (torch.Tensor): Matrix of squared distances ||x_i - x_j||^2
-        sigmas_sq (torch.Tensor): Row vector of squared sigma for each row in distances
-        mask (torch.Tensor): A mask tensor to set diagonal elements to zero
-        eps (float or torch.Tensor): A small value to avoid division by zero.
-    Return:
-        Conditional probability matrix
-    """
-    sigmas_sq_clipped = np.maximum(sigmas_sq, eps)
-    logits = -distances / (2 * sigmas_sq_clipped.reshape(-1, 1))
-    exp_logits = np.exp(logits)
-    masked_exp_logits = exp_logits * mask
-    normalization = np.maximum(masked_exp_logits.sum(axis=1, keepdims=True), eps)
-    return masked_exp_logits / normalization + eps
 
 def make_joint(distr_cond: np.ndarray, eps: float = 1e-10) -> np.ndarray:
     """
@@ -53,82 +25,90 @@ def make_joint(distr_cond: np.ndarray, eps: float = 1e-10) -> np.ndarray:
     distr_joint = (distr_cond + distr_cond.T) / (2 * n_points)
     return np.maximum(distr_joint, eps) * diag_mask
 
-@njit  # Use Numba to accelerate the critical loop
-def _binary_search_step(
-    distances: np.ndarray,
-    diag_mask: np.ndarray,
-    min_sigma_sq: np.ndarray,
-    max_sigma_sq: np.ndarray,
-    sq_sigmas: np.ndarray,
-    target_entropy: float,
-    eps: float,
-    tol: float,
-    max_iter: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Numba implementation of a binary search loop for optimization.
+@njit(nogil=True, parallel=True)
+def _binary_search_perplexity_numba(
+    sqdistances: np.ndarray,
+    desired_perplexity: float,
+    steps: int
+) -> np.ndarray:
+    """Binary search for sigmas of conditional Gaussians using Numba acceleration.
 
-    Args:
-        distances (np.ndarray): Pairwise distances between points
-        diag_mask (np.ndarray): Mask to exclude diagonal elements
-        min_sigma_sq (np.ndarray): Minimum squared sigma values
-        max_sigma_sq (np.ndarray): Maximum squared sigma values
-        sq_sigmas (np.ndarray): Current squared sigma values
-        target_entropy (float): Target entropy value
-        eps (float): Small value to avoid division by zero
-        tol (float): Tolerance for convergence
-        max_iter (int): Maximum number of iterations
+    Parameters
+    ----------
+    sqdistances : ndarray of shape (n_samples, n_neighbors), dtype=np.float32
+        Squared distances between samples and their neighbors.
+    desired_perplexity : float
+        Target perplexity of the conditional distributions.
+    steps : int
+        Number of binary search steps.
 
-    Returns:
-        Tuple[np.ndarray, np.ndarray]: Optimized squared sigma values and conditional probabilities
+    Returns
+    -------
+    P : ndarray of shape (n_samples, n_neighbors), dtype=np.float64
+        Conditional probabilities matrix.
     """
-    finished = np.zeros_like(sq_sigmas, dtype=np.bool_)
-    curr_iter = 0
+    n_samples, n_neighbors = sqdistances.shape
+    using_neighbors = n_neighbors < n_samples
+    desired_entropy = np.log(desired_perplexity)
     
-    while not np.all(finished) and curr_iter < max_iter:
-        # Calculate current conditional probabilities and entropy difference
-        p_cond = np.empty_like(distances)
-        for i in range(distances.shape[0]):
-            sig = sq_sigmas[i]
-            sig_clipped = max(sig, eps)
-            row = -distances[i] / (2 * sig_clipped)
-            exp_row = np.exp(row)
-            masked_row = exp_row * diag_mask[i]
-            norm = max(masked_row.sum(), eps)
-            p_cond[i] = masked_row / norm + eps
-        
-        ent = -(p_cond * np.log2(p_cond)).sum(axis=1)
-        ent_diff = ent - target_entropy
-        
-        # Update search boundaries
-        pos_mask = ent_diff > 0
-        neg_mask = ent_diff <= 0
-        
-        # Update maximum and minimum variances
-        new_max_sigma_sq = np.where(pos_mask, sq_sigmas, max_sigma_sq)
-        new_min_sigma_sq = np.where(neg_mask, sq_sigmas, min_sigma_sq)
-        
-        # Update current variances
-        not_finished = np.abs(ent_diff) >= tol
-        delta = (new_min_sigma_sq + new_max_sigma_sq) / 2
-        sq_sigmas = np.where(not_finished, delta, sq_sigmas)
-        
-        # Update loop variables
-        min_sigma_sq = new_min_sigma_sq
-        max_sigma_sq = new_max_sigma_sq
-        finished = np.abs(ent_diff) < tol
-        curr_iter += 1
-        
-    return sq_sigmas, p_cond
+    # Initialize output array and beta storage
+    P = np.zeros((n_samples, n_neighbors), dtype=np.float64)
+    beta_arr = np.zeros(n_samples, dtype=np.float64)
+
+    # Parallel processing over samples
+    for i in prange(n_samples):
+        beta_min = -np.inf
+        beta_max = np.inf
+        beta = 1.0
+
+        # Binary search for optimal beta
+        for _ in range(steps):
+            sum_Pi = 0.0
+            # Compute unnormalized probabilities
+            for j in range(n_neighbors):
+                # Skip diagonal when using full matrix
+                if not using_neighbors and j == i:
+                    continue
+                val = np.exp(-sqdistances[i, j] * beta)
+                P[i, j] = val
+                sum_Pi += val
+
+            # Handle zero sum case
+            if sum_Pi <= 0.0:
+                sum_Pi = EPSILON_DBL
+
+            # Normalize and compute entropy
+            sum_disti_Pi = 0.0
+            for j in range(n_neighbors):
+                if not using_neighbors and j == i:
+                    continue
+                P[i, j] /= sum_Pi
+                sum_disti_Pi += sqdistances[i, j] * P[i, j]
+
+            entropy = np.log(sum_Pi) + beta * sum_disti_Pi
+            entropy_diff = entropy - desired_entropy
+
+            # Check convergence
+            if abs(entropy_diff) <= PERPLEXITY_TOLERANCE:
+                break
+
+            # Update beta boundaries
+            if entropy_diff > 0:
+                beta_min = beta
+                beta = beta * 2 if beta_max == np.inf else (beta + beta_max) / 2
+            else:
+                beta_max = beta
+                beta = beta / 2 if beta_min == -np.inf else (beta + beta_min) / 2
+
+        beta_arr[i] = beta
+    
+    beta_arr = 1 / (beta_arr * 2)
+    return P, beta_arr
 
 def calc_optimized_p_cond(
     distances: np.ndarray,
     perplexity: float,
-    eps: float = 1e-10,
-    tol: float = 1e-4,
-    max_iter: int = 200,
-    min_allowed_sig_sq: float = 0,
-    max_allowed_sig_sq: float = 100000,
+    steps: int = 100,
     joint: bool = True
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """
@@ -137,39 +117,19 @@ def calc_optimized_p_cond(
     Args:
         distances (np.ndarray): Input distance matrix (N, N)
         perplexity (float): Target perplexity
-        eps (float): Small value to avoid division by zero
-        tol (float): Tolerance for binary search
-        max_iter (int): Maximum number of iterations
-        min_allowed_sig_sq (float): Minimum allowed squared sigma
-        max_allowed_sig_sq (float): Maximum allowed squared sigma
-        joint (bool): Whether to return joint probability matrix
+        steps (int): Number of binary search steps.
+        joint (bool): Whether to return joint probability matrix. 
         
     Returns:
         Optional[Tuple[np.ndarray, np.ndarray]]: Joint probability matrix (and/or optimized variances)
     """
-    n_points = distances.shape[0]
-    target_entropy = np.log2(perplexity)
-    diag_mask = 1 - np.eye(n_points)
-
-    # Initialize variance search range
-    min_sigma_sq = (min_allowed_sig_sq + 1e-20) * np.ones(n_points)
-    max_sigma_sq = max_allowed_sig_sq * np.ones(n_points)
-    sq_sigmas = (min_sigma_sq + max_sigma_sq) / 2
-
-    # Use Numba-accelerated core loop
-    sq_sigmas, p_cond = _binary_search_step(
-        distances, diag_mask, min_sigma_sq, max_sigma_sq, sq_sigmas,
-        target_entropy, eps, tol, max_iter
+    p_cond, sq_sigmas = _binary_search_perplexity_numba(
+        distances, perplexity, steps
     )
-
-    # Check numerical stability
-    if np.isnan(sq_sigmas).any():
-        print("Warning! NaN detected in sigmas. Discarding batch.")
-        return None
 
     # Generate final probability matrix
     if joint:
-        p_cond = make_joint(p_cond, eps=eps) * diag_mask
+        p_cond = make_joint(p_cond)
     
     return p_cond, sq_sigmas
 
@@ -218,7 +178,6 @@ def inv_sd(embedding, degrees_of_freedom=1.0):
     ----------
     embedding : array, shape (n_samples, dim)
         Embedding (coordinates in low-dimensional map).
-
     degrees_of_freedom : int
         Degrees of freedom of the Student's-t distribution.
 
