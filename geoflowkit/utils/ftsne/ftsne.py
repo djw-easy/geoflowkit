@@ -18,7 +18,8 @@ from geoflowkit.flowdataframe import FlowDataFrame
 from geoflowkit.utils.ftsne.utils import (
     calc_optimized_p_cond, 
     get_multivariate_p_cond, 
-    kl_grad, GDOptimizer
+    kl_grad, hd_grad,
+    GDOptimizer
 )
 
 
@@ -34,17 +35,14 @@ class FTSNE:
         between 5 and 50. Different values can result in significantly
         different results. The perplexity must be less than the number
         of samples.
-    
     learning_rate: float (optional, default 'auto')
         The initial learning rate for the embedding optimization. 
         The 'auto' option sets the learning_rate
         to `max(N / early_exaggeration / 4, 50)` where N is the sample size, following [4] and [5].
-    
     max_iter: int (optional, default 1000)
         The number of training epochs to be used in optimizing the
         low dimensional embedding. Larger values result in more accurate
         embeddings. 
-
     early_exaggeration: float (optional, default 12.0)
         Controls how tight natural clusters in the original space are in
         the embedded space and how much space will be between them. For
@@ -53,49 +51,35 @@ class FTSNE:
         very critical. If the cost function increases during initial
         optimization, the early exaggeration factor or the learning rate
         might be too high.
-        
     early_exaggeration_iter: float (optional, default 'auto')
         Number of training cycles in which exaggeration will be applied. 
-
     init: str (optional, default 'pca')
         Method to use for initialization of the embedding. 
         Options are pca, random, or a np.ndarray of shape (n_samples, n_components)
-
     method : {'exact'}, default='exact'
         # TODO: Add support for 'barnes_hut'
-
     random_state: int (optional, default None)
         Seed for random number generator
-
     loss_func: str (optional, default 'kl')
-        Loss function to use for optimization. Options are 'hd', 'kl' or 'js'
-        # TODO: Add support for js divergence and Hellinger distance
-
+        Loss function to use for optimization. Options are 'kl' or 'hd'
     metric: str (optional, default 'euclidean')
         The metric to use to compute distances in high dimensional space.
         If a string is passed it must match a valid predefined metric. 
         Valid string metrics include:
-        
         From scikit-learn: ['cityblock', 'cosine', 'euclidean', 'l1', 'l2', 'manhattan']. 
         These metrics support sparse matrix inputs. ['nan_euclidean'] but it does not yet support sparse matrices.
-
         From scipy.spatial.distance: ['braycurtis', 'canberra', 'chebyshev', 'correlation', 'dice', 'hamming', 'jaccard', 
         'kulsinski', 'mahalanobis', 'minkowski', 'rogerstanimoto', 'russellrao', 'seuclidean', 'sokalmichener', 
         'sokalsneath', 'sqeuclidean', 'yule'] See the documentation for scipy.spatial.distance for details on these metrics. 
         These metrics do not support sparse matrix inputs.
-
     metric_params : dict, default=None
         Additional keyword arguments for the metric function.
-    
     log_progress: str (optional, default 'tqdm')
         Method to use for logging progress. Options are 'tqdm' or 'notebook'
-        
     n_jobs: int (optional, default None)
         The number of parallel jobs to run for pairwise distances calculation
-
     verbose : int, default=0
         Verbosity level. If non-zero, progress is printed to stdout.
-
     angle : float, default=0.5
         Only used if method='barnes_hut'
         This is the trade-off between speed and accuracy for Barnes-Hut T-SNE.
@@ -105,6 +89,10 @@ class FTSNE:
         This method is not very sensitive to changes in this parameter
         in the range of 0.2 - 0.8. Angle less than 0.2 has quickly increasing
         computation time and angle greater 0.8 has quickly increasing error.
+    
+    Reference:
+    ---------
+    [1] Dong J, Pei T*, et al. Visualizing geographical flow data using ft-SNE, International Journal of Geographical Information Science, 2025.
     """
     # Valid distance metrics
     VALID_METRICS = [
@@ -546,8 +534,10 @@ class FTSNE:
     def _ft_sne(self, embedding, pijs, projections):
         if self.loss_func == 'kl':
             obj_func = kl_grad
+        elif self.loss_func == 'hd':
+            obj_func = hd_grad
         else:
-            raise ValueError("Loss function must be 'kl', 'js' or 'hd'. ")
+            raise ValueError("Loss function must be 'kl' or 'hd'. ")
         degrees_of_freedom = max(self.n_components - 1, 1)
         
         self._init_pbar(self.max_iter) if self.verbose > 0 else None

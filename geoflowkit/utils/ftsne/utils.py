@@ -309,24 +309,16 @@ def kl_grad(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
     degrees_of_freedom : int
         Degrees of freedom of the Student's-t distribution.
     """
-    if P.ndim == 1:
-        inv_distances = inv_sd(embedding, degrees_of_freedom)
-        Q = inv_d2q(inv_distances)
-        if compute_error:
-            error = kl_divergence(P, Q)
-        else:
-            error = np.nan
-        PQd = squareform((P - Q) * inv_distances)
+    if P.ndim==2:
+        P = squareform(P)
+    
+    inv_distances = inv_sd(embedding, degrees_of_freedom)
+    Q = inv_d2q(inv_distances)
+    if compute_error:
+        error = kl_divergence(P, Q)
     else:
-        inv_distances = inv_sd(embedding, degrees_of_freedom)
-        Q = inv_d2q(inv_distances)
-        inv_distances = squareform(inv_distances)
-        Q = squareform(Q)
-        if compute_error:
-            error = kl_divergence(P, Q)
-        else:
-            error = np.nan
-        PQd = (P - Q) * inv_distances
+        error = np.nan
+    PQd = squareform((P - Q) * inv_distances)
     
     grad = np.ndarray(embedding.shape)
     for j in range(len(embedding)):
@@ -337,7 +329,7 @@ def kl_grad(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
     return grad, error
 
 
-def hl_distance(P, Q):
+def hd_distance(P, Q):
     """
     Parameters
     ----------
@@ -357,7 +349,7 @@ def hl_distance(P, Q):
     return hl_distance
 
 
-def hl_grad(embedding, P, compute_error=True, **kwargs):
+def hd_grad(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
     """
     Parameters
     ----------
@@ -367,8 +359,30 @@ def hl_grad(embedding, P, compute_error=True, **kwargs):
         Conditional probability matrix.
     compute_error: bool, default=True
         If False, the hl_distance is not computed and returns NaN.
+    degrees_of_freedom : int
+        Degrees of freedom of the Student's-t distribution.
     """
-    # TODO
+    if P.ndim==2:
+        P = squareform(P)
+    
+    inv_distances = inv_sd(embedding, degrees_of_freedom)
+    Q = inv_d2q(inv_distances)
+    if compute_error:
+        # using KL divergence instead of HD distance
+        error = kl_divergence(P, Q)
+    else:
+        error = np.nan
+    sPQ = np.sqrt(P*Q)
+    s = np.sum(sPQ) * 2
+    sPQ = squareform((sPQ - s * Q) * inv_distances)
+    
+    grad = np.ndarray(embedding.shape)
+    for j in range(len(embedding)):
+        grad[j] = np.dot(np.ravel(sPQ[j], order='K'), embedding[j]-embedding)
+    c = 2.0 * (degrees_of_freedom + 1.0) / degrees_of_freedom
+    grad *= c
+    grad *= 4
+    return grad, error
 
 
 class GDOptimizer:
