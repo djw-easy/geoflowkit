@@ -10,15 +10,15 @@ PERPLEXITY_TOLERANCE = 1e-5
 
 def make_joint(distr_cond: np.ndarray, eps: float = 1e-10) -> np.ndarray:
     """
-    Makes a joint probability distribution out of conditional distribution
-    
-    Atgs:
-        distr_cond (torch.Tensor): Conditional distribution matrix
-        eps (float or torch.Tensor): A small value to avoid division by zero
-    
-    Return:
-        Joint distribution matrix. All values in it sum up to 1.
-        Too small values are set to fixed epsilon
+    Makes a joint probability distribution out of conditional distribution.
+
+    Parameters:
+        distr_cond (np.ndarray): Conditional distribution matrix.
+        eps (float): A small value to avoid division by zero.
+
+    Returns:
+        np.ndarray: Joint distribution matrix. All values in it sum up to 1.
+                    Too small values are set to fixed epsilon.
     """
     n_points = distr_cond.shape[0]
     diag_mask = 1 - np.eye(n_points)
@@ -31,21 +31,18 @@ def _binary_search_perplexity_numba(
     desired_perplexity: float,
     steps: int
 ) -> np.ndarray:
-    """Binary search for sigmas of conditional Gaussians using Numba acceleration.
+    """
+    Binary search for sigmas of conditional Gaussians using Numba acceleration.
 
-    Parameters
-    ----------
-    sqdistances : ndarray of shape (n_samples, n_neighbors), dtype=np.float32
-        Squared distances between samples and their neighbors.
-    desired_perplexity : float
-        Target perplexity of the conditional distributions.
-    steps : int
-        Number of binary search steps.
+    Parameters:
+        sqdistances (np.ndarray): Squared distances between samples and their neighbors.
+                                  Shape (n_samples, n_neighbors), dtype=np.float32.
+        desired_perplexity (float): Target perplexity of the conditional distributions.
+        steps (int): Number of binary search steps.
 
-    Returns
-    -------
-    P : ndarray of shape (n_samples, n_neighbors), dtype=np.float64
-        Conditional probabilities matrix.
+    Returns:
+        np.ndarray: Conditional probabilities matrix.
+                    Shape (n_samples, n_neighbors), dtype=np.float64.
     """
     n_samples, n_neighbors = sqdistances.shape
     using_neighbors = n_neighbors < n_samples
@@ -113,15 +110,15 @@ def calc_optimized_p_cond(
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """
     NumPy implementation using a Numba-accelerated binary search.
-    
-    Args:
-        distances (np.ndarray): Input distance matrix (N, N)
-        perplexity (float): Target perplexity
+
+    Parameters:
+        distances (np.ndarray): Input distance matrix (N, N).
+        perplexity (float): Target perplexity.
         steps (int): Number of binary search steps.
-        joint (bool): Whether to return joint probability matrix. 
-        
+        joint (bool): Whether to return joint probability matrix.
+
     Returns:
-        Optional[Tuple[np.ndarray, np.ndarray]]: Joint probability matrix (and/or optimized variances)
+        Optional[Tuple[np.ndarray, np.ndarray]]: Joint probability matrix (and/or optimized variances).
     """
     p_cond, sq_sigmas = _binary_search_perplexity_numba(
         distances, perplexity, steps
@@ -136,16 +133,16 @@ def calc_optimized_p_cond(
 
 def get_multivariate_p_cond(distances_list, sigmas_list, combination='intersection', eps: float=1e-10) -> np.array:
     """
-    Calculates conditional probability distribution given distances and squared sigmas
-    
-    Args:
-        distances_list (List[np.array]): A list with arrays of shape (N, N) containing the pairwise distances between N points.
-        sigmas_list (List[np.array]): A list with row vector of squared sigma for each row in distances
-        combination (str): The combination method to use. Can be 'union' or 'intersection'.
-        eps (float or np.array): A small value to avoid division by zero.
+    Calculates conditional probability distribution given distances and squared sigmas.
 
-    Return:
-        Conditional probability matrix
+    Parameters:
+        distances_list (List[np.array]): A list with arrays of shape (N, N) containing the pairwise distances between N points.
+        sigmas_list (List[np.array]): A list with row vector of squared sigma for each row in distances.
+        combination (str): The combination method to use. Can be 'union' or 'intersection'.
+        eps (float): A small value to avoid division by zero.
+
+    Returns:
+        np.array: Conditional probability matrix.
     """
     n_points = distances_list[0].shape[0]
     diag_mask = 1 - np.eye(n_points, dtype=bool)
@@ -172,17 +169,15 @@ def get_multivariate_p_cond(distances_list, sigmas_list, combination='intersecti
 
 def inv_sd(embedding, degrees_of_freedom=1.0):
     """
-    Computes the pairwise inverse square law distances for the given embedding. 
+    Computes the pairwise inverse square law distances for the given embedding.
 
-    Parameters
-    ----------
-    embedding : array, shape (n_samples, dim)
-        Embedding (coordinates in low-dimensional map).
-    degrees_of_freedom : int
-        Degrees of freedom of the Student's-t distribution.
+    Parameters:
+        embedding (np.ndarray): Embedding (coordinates in low-dimensional map).
+                                Shape (n_samples, dim).
+        degrees_of_freedom (float): Degrees of freedom of the Student's-t distribution.
 
-    Returns
-        dist: pairwise inverse square law distances, as a condensed 1D array.
+    Returns:
+        np.ndarray: Pairwise inverse square law distances, as a condensed 1D array.
     """
     distances = pdist(embedding, metric='sqeuclidean')
     distances /= degrees_of_freedom
@@ -193,13 +188,14 @@ def inv_sd(embedding, degrees_of_freedom=1.0):
 
 def d2q(distances, degrees_of_freedom=1.0):
     """
-    Parameters
-    ----------
-    distances : array
-        pairwise distances of the low-dimension embeddings.
+    Converts distances to Q distribution.
 
-    degrees_of_freedom : int
-        Degrees of freedom of the Student's-t distribution.
+    Parameters:
+        distances (np.ndarray): Pairwise distances of the low-dimension embeddings.
+        degrees_of_freedom (float): Degrees of freedom of the Student's-t distribution.
+
+    Returns:
+        np.ndarray: Q distribution.
     """
     MACHINE_EPSILON = np.finfo(np.double).eps
     distances /= degrees_of_freedom
@@ -218,10 +214,13 @@ def d2q(distances, degrees_of_freedom=1.0):
 
 def inv_d2q(distances):
     """
-    Parameters
-    ----------
-    distances : array
-        pairwise inverse square law distances of the low-dimension embeddings.
+    Converts inverse square law distances to Q distribution.
+
+    Parameters:
+        distances (np.ndarray): Pairwise inverse square law distances of the low-dimension embeddings.
+
+    Returns:
+        np.ndarray: Q distribution.
     """
     MACHINE_EPSILON = np.finfo(np.double).eps
     # Q is a heavy-tailed distribution: Student's t-distribution
@@ -237,12 +236,14 @@ def inv_d2q(distances):
 
 def kl_divergence(P, Q):
     """
-    Parameters
-    ----------
-    P : array
-        Conditional probability matrix.
-    Q : array
-        Joint probability matrix.
+    Calculates the Kullback-Leibler divergence between P and Q.
+
+    Parameters:
+        P (np.ndarray): Conditional probability matrix.
+        Q (np.ndarray): Joint probability matrix.
+
+    Returns:
+        float: KL divergence value.
     """
     MACHINE_EPSILON = np.finfo(np.double).eps
     if P.ndim == 1:
@@ -257,16 +258,17 @@ def kl_divergence(P, Q):
 
 def kl_grad(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
     """
-    Parameters
-    ----------
-    embedding : array, shape (n_samples, dim)
-        Embedding (coordinates in low-dimensional map).
-    P : array
-        Conditional probability matrix. 
-    compute_error: bool, default=True
-        If False, the kl_divergence is not computed and returns NaN.
-    degrees_of_freedom : int
-        Degrees of freedom of the Student's-t distribution.
+    Computes the gradient of the KL divergence.
+
+    Parameters:
+        embedding (np.ndarray): Embedding (coordinates in low-dimensional map).
+                                Shape (n_samples, dim).
+        P (np.ndarray): Conditional probability matrix.
+        compute_error (bool): If False, the kl_divergence is not computed and returns NaN.
+        degrees_of_freedom (float): Degrees of freedom of the Student's-t distribution.
+
+    Returns:
+        Tuple[np.ndarray, float]: Gradient and error (KL divergence).
     """
     if P.ndim==2:
         P = squareform(P)
@@ -290,12 +292,14 @@ def kl_grad(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
 
 def hd_distance(P, Q):
     """
-    Parameters
-    ----------
-    P : array
-        Conditional probability matrix.
-    Q : array
-        Joint probability matrix.
+    Calculates the Hellinger distance between P and Q.
+
+    Parameters:
+        P (np.ndarray): Conditional probability matrix.
+        Q (np.ndarray): Joint probability matrix.
+
+    Returns:
+        float: Hellinger distance value.
     """
     if P.ndim == 1:
         hl_distance = np.square(np.sqrt(P) - np.sqrt(Q))
@@ -310,16 +314,17 @@ def hd_distance(P, Q):
 
 def hd_grad(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
     """
-    Parameters
-    ----------
-    embedding : array, shape (n_samples, dim)
-        Embedding (coordinates in low-dimensional map).
-    P : array
-        Conditional probability matrix.
-    compute_error: bool, default=True
-        If False, the hl_distance is not computed and returns NaN.
-    degrees_of_freedom : int
-        Degrees of freedom of the Student's-t distribution.
+    Computes the gradient of the Hellinger distance.
+
+    Parameters:
+        embedding (np.ndarray): Embedding (coordinates in low-dimensional map).
+                                Shape (n_samples, dim).
+        P (np.ndarray): Conditional probability matrix.
+        compute_error (bool): If False, the hl_distance is not computed and returns NaN.
+        degrees_of_freedom (float): Degrees of freedom of the Student's-t distribution.
+
+    Returns:
+        Tuple[np.ndarray, float]: Gradient and error (KL divergence).
     """
     if P.ndim==2:
         P = squareform(P)
@@ -355,18 +360,18 @@ class GDOptimizer:
 
     def __call__(self, obj_func, embedding, pijs, projections, degrees_of_freedom=None):
         """
-        Parameters
-        ----------
-        obj_func : function
-            Objective function, ex. kl_grad.
-        embedding : array
-            Embedding (coordinates in low-dimensional map).
-        pijs : List[array, shape (n_samples, n_samples)]
-            Conditional probability matrixs of different features of flow.
-        projections : list
-            Projections of different features of flow.
-        degrees_of_freedom : int
-            Degrees of freedom of the Student's-t distribution.
+        Performs gradient descent optimization.
+
+        Parameters:
+            obj_func (callable): Objective function, e.g., kl_grad.
+            embedding (np.ndarray): Embedding (coordinates in low-dimensional map).
+            pijs (List[np.ndarray]): Conditional probability matrices of different features of flow.
+                                     Shape (n_samples, n_samples) for each array.
+            projections (list): Projections of different features of flow.
+            degrees_of_freedom (float): Degrees of freedom of the Student's-t distribution.
+
+        Returns:
+            Tuple[np.ndarray, float]: Updated embedding and total error.
         """
         total_error = 0.0
         grads = []
