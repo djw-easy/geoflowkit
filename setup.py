@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="geoflowkit",
-    version="0.1.2",
+    version="0.1.3",
     packages=find_packages(),
     install_requires=[
         "shapely",
@@ -10,6 +10,9 @@ setup(
         "pandas",
         "geopandas>=1.0.1",
         "matplotlib",
+        "scikit-learn",
+        "tqdm",
+        "numba"
     ],
     author="GeoFlow Developer",
     author_email="djw@lreis.ac.cn",
@@ -23,5 +26,5 @@ setup(
         "Operating System :: OS Independent",
     ],
     license="MIT",
-    python_requires='>=3.6',
+    python_requires='>=3.7',
 )

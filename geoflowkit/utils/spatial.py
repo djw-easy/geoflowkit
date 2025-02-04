@@ -219,8 +219,8 @@ def k_func(fdf: FlowDataFrame, dr, k=1, distance='max', dis_matrix: np.ndarray=N
 
     References
     ----------
-    Tao R, Thill J C. Spatial cluster detection in spatial flow data[J].
-    Geographical Analysis, 2016,48(4):355-372.
+    Tao R, Thill J C. Spatial cluster detection in spatial flow data, 
+    Geographical Analysis, 2016, 48 (4): 355-372.
     """
     flow_num, density, interval_num, mask, dis_matrix = _params_for_kl_func(fdf, dr, k=k,  
                                                                             distance=distance, 

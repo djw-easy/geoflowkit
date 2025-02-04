@@ -102,11 +102,6 @@ class FTSNE:
         'rogerstanimoto', 'russellrao', 'seuclidean', 'sokalmichener',
         'sokalsneath', 'sqeuclidean', 'yule'
     ]
-    # Control the number of exploration iterations with early_exaggeration on
-    _EXPLORATION_MAX_ITER = 250
-
-    # Control the number of iterations between progress checks
-    _N_ITER_CHECK = 50
 
     def __init__(self, 
                  perplexity=30.0, 
@@ -497,16 +492,14 @@ class FTSNE:
 
         pijs = []
         projections = []
-        for attr, dim in identity.items():
-            distances = attr_distances[attr]
-            pij = _joint_probabilities(distances, self.perplexity, 0)
-            pijs.append(pij)
-            projections.append(dim)
-
+        temp_pijs = {}
         for attrs, dims in intersection.items():
             attrs_distances = [attr_distances[attr] for attr in attrs]
             if relation == 'probability':
-                attrs_sigmas = [calc_optimized_p_cond(distances, self.perplexity)[1] for distances in attrs_distances]
+                attrs_p_sigma = [calc_optimized_p_cond(distances, self.perplexity) for distances in attrs_distances]
+                attrs_sigmas = [sigma for p, sigma in attrs_p_sigma]
+                attrs_p = [p for p, sigma in attrs_p_sigma]
+                temp_pijs.update(zip(dims, attrs_p))
                 pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='intersection')
                 pij = squareform(pij)
             else:
@@ -519,7 +512,10 @@ class FTSNE:
         for attrs, dims in union.items():
             attrs_distances = [attr_distances[attr] for attr in attrs]
             if relation == 'probability':
-                attrs_sigmas = [calc_optimized_p_cond(distances, self.perplexity)[1] for distances in attrs_distances]
+                attrs_p_sigma = [calc_optimized_p_cond(distances, self.perplexity) for distances in attrs_distances]
+                attrs_sigmas = [sigma for p, sigma in attrs_p_sigma]
+                attrs_p = [p for p, sigma in attrs_p_sigma]
+                temp_pijs.update(zip(dims, attrs_p))
                 pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='union')
                 pij = squareform(pij)
             else:
@@ -528,6 +524,15 @@ class FTSNE:
                 pij = _joint_probabilities(distances, self.perplexity, 0)
             pijs.append(pij)
             projections.append(dims)
+
+        for attr, dim in identity.items():
+            distances = attr_distances[attr]
+            if dim in temp_pijs:
+                pij = temp_pijs[dim]
+            else:
+                pij = _joint_probabilities(distances, self.perplexity, 0)
+            pijs.append(pij)
+            projections.append(dim)
 
         return self._ft_sne(embedding, pijs, projections)
 
