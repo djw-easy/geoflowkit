@@ -1,7 +1,10 @@
 import numpy as np
 from numba import njit, prange
 from typing import Optional, Tuple
+from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import expm
 from scipy.spatial.distance import pdist, squareform
+from sklearn.manifold._t_sne import _kl_divergence_bh
 
 
 EPSILON_DBL = 1e-8
@@ -32,7 +35,7 @@ def _binary_search_perplexity_numba(
     steps: int
 ) -> np.ndarray:
     """
-    Binary search for sigmas of conditional Gaussians using Numba acceleration.
+    Binary search for sq_sigmas of conditional Gaussians using Numba acceleration.
 
     Parameters:
         sqdistances (np.ndarray): Squared distances between samples and their neighbors.
@@ -131,13 +134,60 @@ def calc_optimized_p_cond(
     return p_cond, sq_sigmas
 
 
-def get_multivariate_p_cond(distances_list, sigmas_list, combination='intersection', eps: float=1e-10) -> np.array:
+def calc_optimized_p_cond_nn(
+    distances: np.ndarray,
+    perplexity: float,
+    steps: int = 100,
+    joint: bool = True
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """
-    Calculates conditional probability distribution given distances and squared sigmas.
+    NumPy implementation using a Numba-accelerated binary search.
+
+    Parameters:
+        distances (np.ndarray): Input distance matrix (N, N).
+        perplexity (float): Target perplexity.
+        steps (int): Number of binary search steps.
+        joint (bool): Whether to return joint probability matrix.
+
+    Returns:
+        Optional[Tuple[np.ndarray, np.ndarray]]: Joint probability matrix (and/or optimized variances).
+    """
+    # Compute conditional probabilities such that they approximately match
+    # the desired perplexity
+    distances.sort_indices()
+    n_samples = distances.shape[0]
+    distances_data = distances.data.reshape(n_samples, -1)
+    distances_data = distances_data.astype(np.float32, copy=False)
+    p_cond, sq_sigmas = _binary_search_perplexity_numba(
+        distances_data, perplexity, steps
+    )
+    assert np.all(np.isfinite(p_cond)), "All probabilities should be finite"
+    # Symmetrize the joint probability distribution using sparse operations
+    p_cond = csr_matrix(
+        (p_cond.ravel(), distances.indices, distances.indptr),
+        shape=(n_samples, n_samples),
+    )
+
+    # Generate final probability matrix
+    if joint:
+        p_cond = p_cond + p_cond.T
+
+        # Normalize the joint probability distribution
+        sum_P = np.maximum(p_cond.sum(), EPSILON_DBL)
+        p_cond /= sum_P
+
+        assert np.all(np.abs(p_cond.data) <= 1.0)
+    
+    return p_cond, sq_sigmas
+
+
+def get_multivariate_p_cond(distances_list, sq_sigmas_list, combination='intersection', eps: float=1e-10) -> np.array:
+    """
+    Calculates conditional probability distribution given distances and squared sq_sigmas.
 
     Parameters:
         distances_list (List[np.array]): A list with arrays of shape (N, N) containing the pairwise distances between N points.
-        sigmas_list (List[np.array]): A list with row vector of squared sigma for each row in distances.
+        sq_sigmas_list (List[np.array]): A list with row vector of squared sigma for each row in distances.
         combination (str): The combination method to use. Can be 'union' or 'intersection'.
         eps (float): A small value to avoid division by zero.
 
@@ -148,15 +198,12 @@ def get_multivariate_p_cond(distances_list, sigmas_list, combination='intersecti
     diag_mask = 1 - np.eye(n_points, dtype=bool)
 
     if combination == 'union':
-        logits1 = sum(np.exp(-distances / (2 * np.maximum(sigmas, eps).reshape(-1, 1))) for distances, sigmas in zip(distances_list, sigmas_list))
-        l1_1 = np.exp(-distances_list[0] / (2 * np.maximum(sigmas_list[0], eps).reshape(-1, 1)))
-        l1_2 = np.exp(-distances_list[1] / (2 * np.maximum(sigmas_list[1], eps).reshape(-1, 1)))
-
-        logits2 = sum(distances / np.maximum(sigmas, eps).reshape(-1, 1) for distances, sigmas in zip(distances_list, sigmas_list))
+        logits1 = sum(np.exp(-distances / (2 * np.maximum(sq_sigmas, eps).reshape(-1, 1))) for distances, sq_sigmas in zip(distances_list, sq_sigmas_list))
+        logits2 = sum(distances / np.maximum(sq_sigmas, eps).reshape(-1, 1) for distances, sq_sigmas in zip(distances_list, sq_sigmas_list))
         logits2 = np.exp(-0.5 * logits2)
         masked_exp_logits = (logits1 - logits2) * diag_mask
     elif combination == 'intersection':
-        logits = sum(distances / np.maximum(sigmas, eps).reshape(-1, 1) for distances, sigmas in zip(distances_list, sigmas_list))
+        logits = sum(distances / np.maximum(sq_sigmas, eps).reshape(-1, 1) for distances, sq_sigmas in zip(distances_list, sq_sigmas_list))
         logits = np.exp(-0.5 * logits)
         masked_exp_logits = logits * diag_mask
     else:
@@ -165,6 +212,40 @@ def get_multivariate_p_cond(distances_list, sigmas_list, combination='intersecti
     distr_cond = masked_exp_logits / normalization
     distr_joint = (distr_cond + distr_cond.T) / (2 * n_points)
     return distr_joint * diag_mask
+
+
+# TODO: bug in expm of scipy sparse matrix
+def get_multivariate_p_cond_nn(distances_list, sq_sigmas_list, combination='intersection', eps: float=1e-10) -> np.array:
+    """
+    Calculates conditional probability distribution given distances and squared sq_sigmas.
+
+    Parameters:
+        distances_list (List[np.array]): A list with arrays of shape (N, N) containing the pairwise distances between N points.
+        sq_sigmas_list (List[np.array]): A list with row vector of squared sigma for each row in distances.
+        combination (str): The combination method to use. Can be 'union' or 'intersection'.
+        eps (float): A small value to avoid division by zero.
+
+    Returns:
+        np.array: Conditional probability matrix.
+    """
+    n_points = distances_list[0].shape[0]
+    distances_list = [distances.tocsc() for distances in distances_list]
+
+    if combination == 'union':
+        logits1 = sum(expm(-distances / (2 * np.maximum(sq_sigmas, eps).reshape(-1, 1))) for distances, sq_sigmas in zip(distances_list, sq_sigmas_list))
+        logits2 = sum(distances / np.maximum(sq_sigmas, eps).reshape(-1, 1) for distances, sq_sigmas in zip(distances_list, sq_sigmas_list))
+        logits2 = expm(-0.5 * logits2)
+        masked_exp_logits = (logits1 - logits2)
+    elif combination == 'intersection':
+        logits = sum(distances / np.maximum(sq_sigmas, eps).reshape(-1, 1) for distances, sq_sigmas in zip(distances_list, sq_sigmas_list))
+        logits = expm(-0.5 * logits)
+        masked_exp_logits = logits
+    else:
+        raise ValueError(f'Unknown combination: {combination}, must be "union" or "intersection"')
+    normalization = np.maximum(masked_exp_logits.sum(1), eps).reshape(-1, 1)
+    distr_cond = masked_exp_logits / normalization
+    distr_joint = (distr_cond + distr_cond.T) / (2 * n_points)
+    return distr_joint.tocsr()
 
 
 def inv_sd(embedding, degrees_of_freedom=1.0):
@@ -290,6 +371,37 @@ def kl_grad(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
     return grad, error
 
 
+def kl_grad_bh(embedding, P, compute_error=True, degrees_of_freedom=1.0, **kwargs):
+    """
+    Computes the gradient of the KL divergence.
+
+    Parameters:
+        embedding (np.ndarray): Embedding (coordinates in low-dimensional map).
+                                Shape (n_samples, dim).
+        P (np.ndarray): Conditional probability matrix.
+        compute_error (bool): If False, the kl_divergence is not computed and returns NaN.
+        degrees_of_freedom (float): Degrees of freedom of the Student's-t distribution.
+
+    Returns:
+        Tuple[np.ndarray, float]: Gradient and error (KL divergence).
+    """
+    n_samples, n_components = embedding.shape
+    embedding = embedding.ravel()
+    error, grad = _kl_divergence_bh(
+        embedding,
+        P,
+        degrees_of_freedom,
+        n_samples,
+        n_components,
+        compute_error=compute_error,
+        angle=kwargs['angle'], 
+        num_threads=kwargs['num_threads']
+    )
+    grad *= 4
+    grad = grad.reshape(n_samples, n_components)
+    return grad, error
+
+
 def hd_distance(P, Q):
     """
     Calculates the Hellinger distance between P and Q.
@@ -358,7 +470,7 @@ class GDOptimizer:
         # assert isinstance(lr_scheduler, callable) or lr_scheduler is None
         self.lr_scheduler = lr_scheduler
 
-    def __call__(self, obj_func, embedding, pijs, projections, degrees_of_freedom=None):
+    def __call__(self, obj_func, embedding, pijs, projections, degrees_of_freedom=None, **kwargs):
         """
         Performs gradient descent optimization.
 
@@ -375,7 +487,6 @@ class GDOptimizer:
         """
         total_error = 0.0
         grads = []
-        kwargs = {'degrees_of_freedom': degrees_of_freedom}
         proj_matrix = np.eye(embedding.shape[1])
         for pij, proj in zip(pijs, projections):
             if isinstance(proj, int):

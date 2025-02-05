@@ -2,6 +2,7 @@ import time
 import warnings
 import numpy as np
 import pandas as pd
+from numbers import Integral, Real
 from typing import Optional, Union, Tuple
 
 
@@ -10,15 +11,22 @@ from sklearn.decomposition import PCA
 from scipy.spatial.distance import squareform
 from sklearn.metrics import pairwise_distances
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics.pairwise import _VALID_METRICS
 from sklearn.preprocessing import PolynomialFeatures
-from sklearn.manifold._t_sne import _joint_probabilities
+from sklearn.utils._openmp_helpers import _openmp_effective_n_threads
+from sklearn.manifold._t_sne import _joint_probabilities, _joint_probabilities_nn
+from sklearn.utils._param_validation import Hidden, Interval, StrOptions, validate_params
 
 
 from geoflowkit.flowdataframe import FlowDataFrame
 from geoflowkit.utils.ftsne.utils import (
     calc_optimized_p_cond, 
+    calc_optimized_p_cond_nn, 
     get_multivariate_p_cond, 
-    kl_grad, hd_grad,
+    get_multivariate_p_cond_nn, 
+    kl_grad, kl_grad_bh, 
+    hd_grad,
     GDOptimizer
 )
 
@@ -39,7 +47,7 @@ class FTSNE:
         The initial learning rate for the embedding optimization. 
         The 'auto' option sets the learning_rate
         to `max(N / early_exaggeration / 4, 50)` where N is the sample size, following [4] and [5].
-    max_iter: int (optional, default 1000)
+    max_iter: int (optional, default 100)
         The number of training epochs to be used in optimizing the
         low dimensional embedding. Larger values result in more accurate
         embeddings. 
@@ -94,19 +102,35 @@ class FTSNE:
     ---------
     [1] Dong J, Pei T*, et al. Visualizing geographical flow data using ft-SNE, International Journal of Geographical Information Science, 2025.
     """
-    # Valid distance metrics
-    VALID_METRICS = [
-        'cityblock', 'cosine', 'euclidean', 'l1', 'l2', 'manhattan',
-        'braycurtis', 'canberra', 'chebyshev', 'correlation', 'dice',
-        'hamming', 'jaccard', 'kulsinski', 'mahalanobis', 'minkowski',
-        'rogerstanimoto', 'russellrao', 'seuclidean', 'sokalmichener',
-        'sokalsneath', 'sqeuclidean', 'yule'
-    ]
+    _parameter_constraints: dict = {
+        "perplexity": [Interval(Real, 0, None, closed="neither")],
+        "learning_rate": [
+            StrOptions({"auto"}),
+            Interval(Real, 0, None, closed="neither"),
+        ],
+        "max_iter": [Interval(Integral, 10, None, closed="left"), None],
+        "early_exaggeration": [Interval(Real, 1, None, closed="left")],
+        "early_exaggeration_iter": [Interval(Integral, 0, None, closed="left"), None],
+        "init": [
+            StrOptions({"pca", "random"}),
+            np.ndarray,
+        ],
+        "method": [StrOptions({"barnes_hut", "exact"})],
+        "random_state": ["random_state"],
+        "loss_func": [StrOptions({"kl", "hd"})],
+        "metric": [StrOptions(set(_VALID_METRICS) | {"precomputed"}), callable],
+        "metric_params": [dict, None],
+        "log_progress": [StrOptions({"tqdm", "notebook", "none"})],
+        "n_jobs": [None, Integral],
+        "verbose": [Interval(Integral, 0, None, closed="left")],
+        "angle": [Interval(Real, 0, 1, closed="both")],
+    }
 
+    @validate_params(_parameter_constraints, prefer_skip_nested_validation=True)
     def __init__(self, 
                  perplexity=30.0, 
                  learning_rate=0.1,
-                 max_iter=1000, 
+                 max_iter=100, 
                  early_exaggeration=12.0,
                  early_exaggeration_iter='auto', 
                  init='pca', 
@@ -118,7 +142,7 @@ class FTSNE:
                  log_progress='tqdm', 
                  n_jobs=None, 
                  verbose=0, 
-                angle=0.5):
+                 angle=0.5):
         self.perplexity = perplexity
         self.learning_rate = learning_rate
         self.max_iter = max_iter
@@ -270,8 +294,8 @@ class FTSNE:
             for attr, metric in metrics.items():
                 if attr not in used_attrs:
                     raise ValueError(f"Metrics attribute {attr} must be used in identity, intersection or union")
-                if metric not in self.VALID_METRICS:
-                    raise ValueError(f"Invalid metric {metric}. Valid metrics are: {self.VALID_METRICS}")
+                if metric not in _VALID_METRICS:
+                    raise ValueError(f"Invalid metric {metric}. Valid metrics are: {_VALID_METRICS}")
 
         return self.n_components
     
@@ -439,6 +463,15 @@ class FTSNE:
         # Check parameters and get embedding dimension
         if identity is None and intersection is None and union is None:
             raise ValueError("At least one mapping (identity, intersection and union) must be specified")
+        if relation not in ['probability', 'distance']:
+            raise ValueError("Relation must be 'probability' or 'distance'")
+        if self.method=='barnes_hut':
+            raise NotImplementedError("Barnes-Hut method is not implemented yet")
+        if relation=='distance' and self.method=='barnes_hut' and (intersection or union):
+            raise ValueError("Relation 'distance' is not supported for intersection and union mappings when method is 'barnes_hut'")
+        if self.method=='barnes_hut' and self.loss_func=='hd':
+            warnings.warn("Loss function 'hd' is not supported for Barnes-Hut method, using KL divergence instead")
+            self.loss_func = 'kl'
         self.n_components = self._check_params(fdf, identity, intersection, union, metrics)
         
         # Initialize embedding
@@ -479,13 +512,27 @@ class FTSNE:
                     else:
                         raise ValueError("Haversine distance only works for geographic data")
                 
-                if metric == "euclidean":
-                    distances = pairwise_distances(values, metric=metric, squared=True)
+                if self.method == "exact":
+                    if metric == "euclidean":
+                        distances = pairwise_distances(values, metric=metric, squared=True)
+                    else:
+                        metric_params_ = self.metric_params or {}
+                        distances = pairwise_distances(values, metric=metric, **metric_params_)
+                        distances = distances ** 2
                 else:
-                    metric_params_ = self.metric_params or {}
-                    distances = pairwise_distances(values, metric=metric, **metric_params_)
-                    distances = distances ** 2
-                # attr_distances[attr] = distances / distances.max()
+                    n_neighbors = min(self.n_samples - 1, int(3.0 * self.perplexity + 1))
+                    # Find the nearest neighbors for every point
+                    knn = NearestNeighbors(
+                        algorithm="auto",
+                        n_jobs=self.n_jobs,
+                        n_neighbors=n_neighbors,
+                        metric=self.metric,
+                        metric_params=self.metric_params,
+                    )
+                    knn.fit(values)
+                    distances = knn.kneighbors_graph(mode="distance")
+                    del knn
+                    distances.data **= 2
                 attr_distances[attr] = distances
         elif isinstance(fdf, dict):
             attr_distances = fdf
@@ -496,12 +543,18 @@ class FTSNE:
         for attrs, dims in intersection.items():
             attrs_distances = [attr_distances[attr] for attr in attrs]
             if relation == 'probability':
-                attrs_p_sigma = [calc_optimized_p_cond(distances, self.perplexity) for distances in attrs_distances]
-                attrs_sigmas = [sigma for p, sigma in attrs_p_sigma]
+                if self.method == "exact":
+                    attrs_p_sigma = [calc_optimized_p_cond(distances, self.perplexity) for distances in attrs_distances]
+                else:
+                    attrs_p_sigma = [calc_optimized_p_cond_nn(distances, self.perplexity) for distances in attrs_distances]
+                attrs_sq_sigmas = [sigma for p, sigma in attrs_p_sigma]
                 attrs_p = [p for p, sigma in attrs_p_sigma]
                 temp_pijs.update(zip(dims, attrs_p))
-                pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='intersection')
-                pij = squareform(pij)
+                if self.method == "exact":
+                    pij = get_multivariate_p_cond(attrs_distances, attrs_sq_sigmas, combination='intersection')
+                    pij = squareform(pij)
+                else:
+                    pij = get_multivariate_p_cond_nn(attrs_distances, attrs_sq_sigmas, combination='intersection')
             else:
                 distances = np.concatenate([distances[..., np.newaxis] for distances in attrs_distances], axis=2)
                 distances = np.max(distances, axis=2)
@@ -512,12 +565,18 @@ class FTSNE:
         for attrs, dims in union.items():
             attrs_distances = [attr_distances[attr] for attr in attrs]
             if relation == 'probability':
-                attrs_p_sigma = [calc_optimized_p_cond(distances, self.perplexity) for distances in attrs_distances]
-                attrs_sigmas = [sigma for p, sigma in attrs_p_sigma]
+                if self.method == "exact":
+                    attrs_p_sigma = [calc_optimized_p_cond(distances, self.perplexity) for distances in attrs_distances]
+                else:
+                    attrs_p_sigma = [calc_optimized_p_cond_nn(distances, self.perplexity) for distances in attrs_distances]
+                attrs_sq_sigmas = [sigma for p, sigma in attrs_p_sigma]
                 attrs_p = [p for p, sigma in attrs_p_sigma]
                 temp_pijs.update(zip(dims, attrs_p))
-                pij = get_multivariate_p_cond(attrs_distances, attrs_sigmas, combination='union')
-                pij = squareform(pij)
+                if self.method == "exact":
+                    pij = get_multivariate_p_cond(attrs_distances, attrs_sq_sigmas, combination='union')
+                    pij = squareform(pij)
+                else:
+                    pij = get_multivariate_p_cond_nn(attrs_distances, attrs_sq_sigmas, combination='union')
             else:
                 distances = np.concatenate([distances[..., np.newaxis] for distances in attrs_distances], axis=2)
                 distances = np.min(distances, axis=2)
@@ -530,7 +589,10 @@ class FTSNE:
             if dim in temp_pijs:
                 pij = temp_pijs[dim]
             else:
-                pij = _joint_probabilities(distances, self.perplexity, 0)
+                if self.method == "exact":
+                    pij = _joint_probabilities(distances, self.perplexity, 0)
+                else:
+                    pij = _joint_probabilities_nn(distances, self.perplexity, 0)
             pijs.append(pij)
             projections.append(dim)
 
@@ -538,7 +600,7 @@ class FTSNE:
 
     def _ft_sne(self, embedding, pijs, projections):
         if self.loss_func == 'kl':
-            obj_func = kl_grad
+            obj_func = kl_grad if self.method=='exact' else kl_grad_bh
         elif self.loss_func == 'hd':
             obj_func = hd_grad
         else:
@@ -546,12 +608,13 @@ class FTSNE:
         degrees_of_freedom = max(self.n_components - 1, 1)
         
         self._init_pbar(self.max_iter) if self.verbose > 0 else None
+        kwargs = {'angle': self.angle, 'num_threads': _openmp_effective_n_threads()}
         # Learning schedule (part 1): do 250 iteration with lower momentum but
         # higher learning rate controlled via the early exaggeration parameter
         pijs = [pij * self.early_exaggeration for pij in pijs]
         optimizer = GDOptimizer(self.learning_rate_, 0.5)
         for epoch in range(self.early_exaggeration_iter):
-            embedding, error = optimizer(obj_func, embedding, pijs, projections, degrees_of_freedom)
+            embedding, error = optimizer(obj_func, embedding, pijs, projections, degrees_of_freedom, **kwargs)
             if self.verbose > 0 and self.pbar is not None:
                 self.pbar.update(1)
                 self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {error:.4f}")
@@ -561,7 +624,7 @@ class FTSNE:
         pijs = [pij / self.early_exaggeration for pij in pijs]
         optimizer = GDOptimizer(self.learning_rate_, 0.8, lr_scheduler=None)
         for epoch in range(self.early_exaggeration_iter, self.max_iter):
-            embedding, error = optimizer(obj_func, embedding, pijs, projections, degrees_of_freedom)
+            embedding, error = optimizer(obj_func, embedding, pijs, projections, degrees_of_freedom, **kwargs)
             if self.verbose > 0 and self.pbar is not None:
                 self.pbar.update(1)
                 self.pbar.set_description(f"Epoch [{epoch+1}/{self.max_iter}] KL Divergence: {error:.4f}")
