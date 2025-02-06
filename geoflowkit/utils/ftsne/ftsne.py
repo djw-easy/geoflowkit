@@ -460,6 +460,36 @@ class FTSNE:
     def fit_transform(self, fdf: Union[FlowDataFrame, dict], 
                       identity: dict = None, intersection: dict = None, union: dict = None, 
                       metrics: dict = None, relation: str = 'probability', y=None):
+        """
+        Fit fdf into an embedded space and return that transformed output.
+
+        Parameters
+        ----------
+        fdf : Union[FlowDataFrame, dict]
+            Input flow data. If dict, must contain 2D numpy arrays as values with same number of rows and cols. 
+        identity : dict, optional
+            Identity mapping, maps single feature of flow to a certain dimension in an embedding space. 
+            For example, {'o': 0} maps the origin points of the flow dataset to the first dimension of the embedding space.
+        intersection : dict, optional
+            Intersection mapping, maps multiple features of flow to a(or more) certain dimension in an embedding space.
+            For example, {('o', 'd'): 0} maps the OD points of the flow dataset to the first dimension of the embedding space.
+        union : dict, optional
+            Union mapping, maps multiple features of flow to a(or more) certain dimension in an embedding space. 
+            For example, {('o', 'd'): (0, 1)} maps the od points of the flow dataset to the first and second dimension of the embedding space.
+        metrics : dict, optional
+            The metrics to use to compute distances of each features of the flow dataset.
+            If None, It will use metric defined in the __init__ function. 
+            For example, {'o': 'euclidean'} means that using euclidean to compute distances for the origin points of the flow dataset.
+        relation : str, optional
+            Method to calculate the intersection probability and the union probability, 'probability' or 'distance', default='probability'
+        y : None
+            Ignored.
+        
+        Returns
+        -------
+        embedding : np.ndarray
+            Embedding of the training data in low-dimensional space.
+        """
         # Check parameters and get embedding dimension
         if identity is None and intersection is None and union is None:
             raise ValueError("At least one mapping (identity, intersection and union) must be specified")
