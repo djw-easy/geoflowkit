@@ -579,7 +579,7 @@ class FTSNE:
                     attrs_p_sigma = [calc_optimized_p_cond_nn(distances, self.perplexity) for distances in attrs_distances]
                 attrs_sq_sigmas = [sigma for p, sigma in attrs_p_sigma]
                 attrs_p = [p for p, sigma in attrs_p_sigma]
-                temp_pijs.update(zip(dims, attrs_p))
+                temp_pijs.update(zip(attrs, attrs_p))
                 if self.method == "exact":
                     pij = get_multivariate_p_cond(attrs_distances, attrs_sq_sigmas, combination='intersection')
                     pij = squareform(pij)
@@ -601,7 +601,7 @@ class FTSNE:
                     attrs_p_sigma = [calc_optimized_p_cond_nn(distances, self.perplexity) for distances in attrs_distances]
                 attrs_sq_sigmas = [sigma for p, sigma in attrs_p_sigma]
                 attrs_p = [p for p, sigma in attrs_p_sigma]
-                temp_pijs.update(zip(dims, attrs_p))
+                temp_pijs.update(zip(attrs, attrs_p))
                 if self.method == "exact":
                     pij = get_multivariate_p_cond(attrs_distances, attrs_sq_sigmas, combination='union')
                     pij = squareform(pij)
@@ -617,7 +617,7 @@ class FTSNE:
         for attr, dim in identity.items():
             distances = attr_distances[attr]
             if dim in temp_pijs:
-                pij = temp_pijs[dim]
+                pij = temp_pijs[attr]
             else:
                 if self.method == "exact":
                     pij = _joint_probabilities(distances, self.perplexity, 0)
