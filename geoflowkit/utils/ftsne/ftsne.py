@@ -495,8 +495,8 @@ class FTSNE:
             raise ValueError("At least one mapping (identity, intersection and union) must be specified")
         if relation not in ['probability', 'distance']:
             raise ValueError("Relation must be 'probability' or 'distance'")
-        if self.method=='barnes_hut':
-            raise NotImplementedError("Barnes-Hut method is not implemented yet")
+        if self.method=='barnes_hut' and (intersection or union):
+            raise NotImplementedError("Barnes-Hut method is not implemented yet for intersection and union mappings")
         if relation=='distance' and self.method=='barnes_hut' and (intersection or union):
             raise ValueError("Relation 'distance' is not supported for intersection and union mappings when method is 'barnes_hut'")
         if self.method=='barnes_hut' and self.loss_func=='hd':
