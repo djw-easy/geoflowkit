@@ -663,7 +663,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         else:
             return super().plot(kind=kind, ax=ax, figsize=figsize, **kwargs)
         
-    def to_grid(self, delta_x=None, delta_y=None, x_size=None, y_size=None) -> 'FlowDataFrame':
+    def to_grid(self, delta_x=None, delta_y=None, x_size=None, y_size=None, inplace=False) -> 'FlowDataFrame':
         """Divide the study area into a grid and calculate the grid of the origin and destination points of each flow.
 
         Parameters:
@@ -671,6 +671,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             delta_y (float): The width of a single grid cell, defaults to None.
             x_size (int): The number of grids in the x direction, defaults to None.
             y_size (int): The number of grids in the y direction, defaults to None.
+            inplace (bool): Whether to modify the FlowDataFrame in place or return a new one. Default False.
 
         Returns:
             FlowDataFrame: The gridded flow dataset.
@@ -687,20 +688,25 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             y_size = int((self.bounds.maxy - self.bounds.miny) / delta_y)
         else:
             raise ValueError("Must specify either delta_x and delta_y, or x_size and y_size.")
-        
+
+        if inplace:
+            df = self
+        else:
+            df = self.copy()
+
         # Calculate the grid for origin and destination points
-        origins = shapely.get_coordinates(self.origin_points)
-        destinations = shapely.get_coordinates(self.dest_points)
-        self.loc[:, 'o_grid_x'] = ((origins[:, 0] - self.bounds.minx) / delta_x).fillna(-1).astype(int)
-        self.loc[:, 'o_grid_y'] = ((origins[:, 1] - self.bounds.miny) / delta_y).fillna(-1).astype(int)
-        self.loc[:, 'd_grid_x'] = ((destinations[:, 0] - self.bounds.minx) / delta_x).fillna(-1).astype(int)
-        self.loc[:, 'd_grid_y'] = ((destinations[:, 1] - self.bounds.miny) / delta_y).fillna(-1).astype(int)
-        
+        origins = shapely.get_coordinates(df.origin_points)
+        destinations = shapely.get_coordinates(df.dest_points)
+        df.loc[:, 'o_grid_x'] = ((origins[:, 0] - df.bounds.minx) / delta_x).fillna(-1).astype(int)
+        df.loc[:, 'o_grid_y'] = ((origins[:, 1] - df.bounds.miny) / delta_y).fillna(-1).astype(int)
+        df.loc[:, 'd_grid_x'] = ((destinations[:, 0] - df.bounds.minx) / delta_x).fillna(-1).astype(int)
+        df.loc[:, 'd_grid_y'] = ((destinations[:, 1] - df.bounds.miny) / delta_y).fillna(-1).astype(int)
+
         # Create grid IDs
-        self.loc[:, 'o_grid_id'] = self['o_grid_y'] * x_size + self['o_grid_x']
-        self.loc[:, 'd_grid_id'] = self['d_grid_y'] * x_size + self['d_grid_x']
-        
-        return self
+        df.loc[:, 'o_grid_id'] = df['o_grid_y'] * x_size + df['o_grid_x']
+        df.loc[:, 'd_grid_id'] = df['d_grid_y'] * x_size + df['d_grid_x']
+
+        return df
 
 
 

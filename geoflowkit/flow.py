@@ -46,7 +46,8 @@ class Flow(BaseMultipartGeometry):
             return od_points
 
         m = len(od_points)
-        assert m == 2, "A Flow must have exactly two points"
+        if m != 2:
+            raise ValueError("A Flow must have exactly two points")
         subs = []
         for i in range(m):
             p = point.Point(od_points[i])

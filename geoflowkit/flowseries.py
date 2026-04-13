@@ -27,10 +27,6 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
     def __init__(self, data=None, index=None, crs=None, **kwargs):
         name = kwargs.pop("name", None)
         if data is not None:
-            # Skip validation if input is already a validated FlowSeries
-            if isinstance(data, FlowSeries):
-                raise ValueError("Input data is already a validated FlowSeries")
-            
             if (
                 hasattr(data, "crs")
                 or (isinstance(data, pd.Series) and hasattr(data.array, "crs"))
@@ -47,17 +43,18 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
                             "allow_override=True)' to overwrite CRS or "
                             "'GeoSeries.to_crs(crs)' to reproject geometries. "
                         )
-            # Validate data
-            data = self._validate_data(data)
-            
+            # Validate data (skip if already a FlowSeries with matching CRS)
+            if not isinstance(data, FlowSeries):
+                data = self._validate_data(data)
+
             if isinstance(data, Flow):
                 # fix problem for scalar geometries passed, ensure the list of
                 # scalars is of correct length if index is specified
                 n = len(index) if index is not None else 1
                 data = [data] * n
-            
+
             s = pd.Series(data, index=index, name=name, **kwargs)
-            
+
             index = s.index
             name = s.name
             geometry_array = GeometryArray(np.asarray(data), crs=crs)
@@ -98,7 +95,6 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
     
     def _wrapped_pandas_method(self, mtd, *args, **kwargs):
         """Wrap a generic pandas method to ensure it returns a GeoSeries"""
-        print('warp')
         val = getattr(super(), mtd)(*args, **kwargs)
         if isinstance(val, (Series, GeoSeries)):
             val.__class__ = FlowSeries
