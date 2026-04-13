@@ -1,9 +1,8 @@
-.vscode
-__pycache__
-tempCodeRunnerFile.py
-temp.ipynb
-temp.py
-.pytest_cache
-dist
-geoflowkit.egg-info
-.claude
+.vscode/
+__pycache__/
+
+dist/
+build/
+geoflowkit.egg-info/
+
+.claude/
