@@ -190,14 +190,34 @@ X_embedded = transformer.fit_transform(
 )
 ```
 
+### Location Centrality (I-index)
+
+The I-index quantifies the irreplaceability of a location based on flows, combining flow volume and flow length into a single metric following the H-index principle.
+
+```python
+from geoflowkit.spatial import i_index
+
+# Calculate I-index for each zone
+result = i_index(fdf, zones)
+
+# Using origin points instead of destination
+result = i_index(fdf, zones, od_type='o')
+
+# With custom alpha parameter
+result = i_index(fdf, zones, alpha=1000.0)
+```
+
+**I-index definition**: The I-index of a location is the maximum value of *i* such that at least *i* flows with a length of at least α × *i* meters have reached this location. Higher values indicate more irreplaceable locations that attract many long-distance flows.
+
 ## Examples
 
 Jupyter notebook examples are available in the `examples/` folder:
 
 - [basic_usage.ipynb](examples/basic_usage.ipynb) - Basic usage of Flow, FlowSeries, and FlowDataFrame
-- [clustering.ipynb](examples/clustering.ipynb) - K-medoid clustering for flow data
+- [clustering.ipynb](examples/clustering.ipynb) - K-medoid and DBSCAN clustering for flow data
 - [kl_function.ipynb](examples/kl_function.ipynb) - K/L functions for spatial clustering detection
 - [ft_sne.ipynb](examples/ft_sne.ipynb) - FTSNE manifold learning for flow data
+- [centrality.ipynb](examples/centrality.ipynb) - I-index for location irreplaceability
 
 ## API Reference
 
@@ -219,6 +239,7 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `local_l_func(fdf, r, distance='max', ...)`: Local L function for individual flows
 - `kmedoid(fdf, n_clusters=5, ...)`: K-medoid clustering for flows
 - `dbscan(fdf, eps=0.5, min_samples=5, ...)`: DBSCAN clustering for flows
+- `i_index(fdf, zones, alpha=None, od_type='d', ...)`: I-index for location irreplaceability
 
 ## License
 
