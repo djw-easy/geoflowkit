@@ -598,8 +598,11 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             or any other plot type supported by GeoPandas.
         ax : matplotlib.axes.Axes, optional
             The axes on which to draw the plot. If None, a new figure and axes will be created.
-        column : str, optional
-            The name of the column to be used for coloring the arrows when kind='arrow'.
+        column : str or array-like, optional
+            The column name or array-like values to be used for coloring the arrows
+            when kind='arrow'. For numeric columns/arrays, arrows are colored using
+            a colormap. For categorical (non-numeric) columns, each category is
+            plotted with a different color and a legend is displayed.
         figsize : tuple, optional
             The size of the figure to create in inches (width, height).
         zoom : float, optional, default: 0.03
@@ -626,11 +629,21 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         
         if kind == 'arrow':
             if column is not None:
-                if column not in self.columns:
-                    raise ValueError(f"Column '{column}' not found in the FlowDataFrame. ")
-                C = self[column].values
+                if isinstance(column, str):
+                    if column not in self.columns:
+                        raise ValueError(f"Column '{column}' not found in the FlowDataFrame. ")
+                    C = self[column].values
+                else:
+                    # Assume column is array-like
+                    C = np.asarray(column)
+                    if len(C) != len(self):
+                        raise ValueError(
+                            f"Array length {len(C)} does not match number of flows {len(self)}."
+                        )
+                is_numeric = np.issubdtype(C.dtype, np.number)
             else:
                 C = None
+                is_numeric = True
             from shapely import get_coordinates
             origins = get_coordinates(self.o)
             destinations = get_coordinates(self.d)
@@ -648,8 +661,33 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             }
             # 使用kwargs更新quiver_kwargs，如果有重复的键，kwargs中的值会覆盖quiver_kwargs中的值
             quiver_kwargs.update(kwargs)
-            
-            if C is not None:
+
+            if C is not None and not is_numeric:
+                # Categorical column: group by category and plot each group
+                import matplotlib.pyplot as plt
+                import matplotlib.cm as cm
+
+                # Get unique categories and assign colors
+                categories = np.unique(C)
+                n_cats = len(categories)
+                cmap = cm.get_cmap(kwargs.get('cmap', 'tab10'), n_cats)
+
+                for idx, cat in enumerate(categories):
+                    mask = C == cat
+                    if np.sum(mask) == 0:
+                        continue
+                    color = cmap(idx)
+                    ax.quiver(
+                        origins[mask, 0], origins[mask, 1],
+                        u[mask], v[mask],
+                        color=color,
+                        label=str(cat),
+                        **quiver_kwargs
+                    )
+                # Add legend if not already present in kwargs
+                if 'legend' not in kwargs:
+                    ax.legend(loc='best', framealpha=0.5)
+            elif C is not None:
                 ax.quiver(origins[:, 0], origins[:, 1], u, v, C, **quiver_kwargs)
             else:
                 ax.quiver(origins[:, 0], origins[:, 1], u, v, **quiver_kwargs)

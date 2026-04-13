@@ -190,6 +190,15 @@ X_embedded = transformer.fit_transform(
 )
 ```
 
+## Examples
+
+Jupyter notebook examples are available in the `examples/` folder:
+
+- [basic_usage.ipynb](examples/basic_usage.ipynb) - Basic usage of Flow, FlowSeries, and FlowDataFrame
+- [clustering.ipynb](examples/clustering.ipynb) - K-medoid clustering for flow data
+- [kl_function.ipynb](examples/kl_function.ipynb) - K/L functions for spatial clustering detection
+- [ft_sne.ipynb](examples/ft_sne.ipynb) - FTSNE manifold learning for flow data
+
 ## API Reference
 
 ### Classes

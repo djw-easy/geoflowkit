@@ -145,8 +145,11 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
         
     def to_crs(self, crs: Union[Any, None] = None, epsg: Union[int, None] = None) -> 'FlowSeries':
         gs = GeoSeries.to_crs(self, crs=crs, epsg=epsg)
+        # Convert geometries back to Flow objects
+        import shapely
+        flows = [Flow(shapely.get_coordinates(geom)) for geom in gs]
         return FlowSeries(
-            gs, crs=gs.crs
+            flows, crs=gs.crs
         )
     
     def plot(self, ax=None, C=None, figsize=None, **kwargs) -> plt.Axes:

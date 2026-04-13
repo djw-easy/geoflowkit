@@ -43,9 +43,8 @@ def flows_from_od(o, d, crs=None):
     if len(o_points) != len(d_points):
         raise ValueError("Origin and destination arrays must have the same length")
 
-    # Vectorized flow creation - 40x+ speedup over loop
-    coords = np.stack([o_points, d_points], axis=1)
-    flows = shapely.multipoints(coords)
+    # Vectorized flow creation - create Flow objects
+    flows = [Flow([o_points[i], d_points[i]]) for i in range(len(o_points))]
 
     return FlowSeries(flows, crs=crs)
 
@@ -120,8 +119,8 @@ def flows_from_geometry(geometry, crs=None):
             cumsum = np.concatenate([[0], np.cumsum(n_coords_per_line)])
             first_points = all_coords[cumsum[:-1]]
             last_points = all_coords[cumsum[1:] - 1]
-            ls_flows = shapely.multipoints(np.stack([first_points, last_points], axis=1))
-            geoms = np.concatenate([geoms, ls_flows]) if geoms else ls_flows
+            ls_flows = [Flow([first_points[i], last_points[i]]) for i in range(len(first_points))]
+            geoms = geoms + ls_flows if geoms else ls_flows
 
         # Process MultiPoints vectorized
         if mp_geoms:
@@ -137,8 +136,8 @@ def flows_from_geometry(geometry, crs=None):
             cumsum = np.concatenate([[0], np.cumsum(n_points_per_mp)])
             first_points = all_coords[cumsum[:-1]]
             last_points = all_coords[cumsum[1:] - 1]
-            mp_flows = shapely.multipoints(np.stack([first_points, last_points], axis=1))
-            geoms = np.concatenate([geoms, mp_flows]) if len(geoms) > 0 else mp_flows
+            mp_flows = [Flow([first_points[i], last_points[i]]) for i in range(len(first_points))]
+            geoms = geoms + mp_flows if geoms else mp_flows
 
         geometry = FlowSeries(geoms, crs=data_crs)
         return geometry
