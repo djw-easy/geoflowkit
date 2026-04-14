@@ -32,8 +32,26 @@ from geoflowkit.manifold.ftsne.utils import (
 
 
 class FTSNE:
-    """ft-SNE A Variant of t-SNE for Visualizing Geographical Flow Data
-    
+    """ft-SNE: A Variant of t-SNE for Visualizing Geographical Flow Data
+
+    ft-SNE (Flow t-SNE) is a dimensionality reduction method specifically designed
+    for visualizing geographical flow data. It extends the classical t-SNE algorithm
+    by modeling flow characteristics such as origin-destination pairs, flow length,
+    and directional information in a unified embedding space.
+
+    Unlike standard t-SNE which treats data points independently, ft-SNE incorporates
+    the relational structure of flows through three types of mappings:
+
+    - **Identity mapping**: Maps a single flow attribute (e.g., origin coordinates)
+      directly to an embedding dimension
+    - **Intersection mapping**: Combines multiple attributes (e.g., both origin and
+      destination coordinates) to model joint flow probability
+    - **Union mapping**: Aggregates multiple attributes to capture overall flow similarity
+
+    The algorithm optimizes aKL divergence or Hellinger distance loss between the
+    probability distributions in high-dimensional flow space and the low-dimensional
+    embedding space.
+
     Parameters
     ----------
     perplexity : float, default=30.0
@@ -43,15 +61,15 @@ class FTSNE:
         between 5 and 50. Different values can result in significantly
         different results. The perplexity must be less than the number
         of samples.
-    learning_rate: float (optional, default 'auto')
-        The initial learning rate for the embedding optimization. 
+    learning_rate : float or 'auto', default='auto'
+        The initial learning rate for the embedding optimization.
         The 'auto' option sets the learning_rate
         to `max(N / early_exaggeration / 4, 50)` where N is the sample size, following [4] and [5].
-    max_iter: int (optional, default 100)
+    max_iter : int, default=100
         The number of training epochs to be used in optimizing the
         low dimensional embedding. Larger values result in more accurate
-        embeddings. 
-    early_exaggeration: float (optional, default 12.0)
+        embeddings.
+    early_exaggeration : float, default=12.0
         Controls how tight natural clusters in the original space are in
         the embedded space and how much space will be between them. For
         larger values, the space between natural clusters will be larger
@@ -59,48 +77,122 @@ class FTSNE:
         very critical. If the cost function increases during initial
         optimization, the early exaggeration factor or the learning rate
         might be too high.
-    early_exaggeration_iter: float (optional, default 'auto')
-        Number of training cycles in which exaggeration will be applied. 
-    init: str (optional, default 'pca')
-        Method to use for initialization of the embedding. 
-        Options are pca, random, or a np.ndarray of shape (n_samples, n_components)
-    method : {'exact'}, default='exact'
-        # TODO: Add support for 'barnes_hut'
-    random_state: int (optional, default None)
-        Seed for random number generator
-    loss_func: str (optional, default 'kl')
-        Loss function to use for optimization. Options are 'kl' or 'hd'
-    metric: str (optional, default 'euclidean')
+    early_exaggeration_iter : int or 'auto', default='auto'
+        Number of training cycles in which exaggeration will be applied.
+        The 'auto' option sets this to `max_iter // 4`.
+    init : str or np.ndarray, default='pca'
+        Method to use for initialization of the embedding. Options are:
+
+        - 'pca': Initialize using PCA on flow attributes (recommended)
+        - 'random': Initialize with random values
+        - np.ndarray: Use a custom initial embedding matrix of shape (n_samples, n_components)
+    method : {'exact', 'barnes_hut'}, default='exact'
+        The algorithm to use for computing the gradient:
+
+        - 'exact': Use the exact gradient computation (O(n^2), suitable for n < 5000)
+        - 'barnes_hut': Use the Barnes-Hut approximation (O(n log n), for larger datasets)
+
+        Note: 'barnes_hut' does not yet support intersection and union mappings.
+    random_state : int, default=None
+        Seed for random number generator. If None, the random state is not set.
+    loss_func : {'kl', 'hd'}, default='kl'
+        Loss function to use for optimization:
+
+        - 'kl': Kullback-Leibler divergence (default)
+        - 'hd': Hellinger distance (requires method='exact')
+    metric : str, default='euclidean'
         The metric to use to compute distances in high dimensional space.
-        If a string is passed it must match a valid predefined metric. 
         Valid string metrics include:
-        From scikit-learn: ['cityblock', 'cosine', 'euclidean', 'l1', 'l2', 'manhattan']. 
-        These metrics support sparse matrix inputs. ['nan_euclidean'] but it does not yet support sparse matrices.
-        From scipy.spatial.distance: ['braycurtis', 'canberra', 'chebyshev', 'correlation', 'dice', 'hamming', 'jaccard', 
-        'kulsinski', 'mahalanobis', 'minkowski', 'rogerstanimoto', 'russellrao', 'seuclidean', 'sokalmichener', 
-        'sokalsneath', 'sqeuclidean', 'yule'] See the documentation for scipy.spatial.distance for details on these metrics. 
-        These metrics do not support sparse matrix inputs.
+
+        - From scikit-learn: ['cityblock', 'cosine', 'euclidean', 'l1', 'l2', 'manhattan',
+          'nan_euclidean']
+        - From scipy.spatial.distance: ['braycurtis', 'canberra', 'chebyshev', 'correlation',
+          'dice', 'hamming', 'jaccard', 'kulsinski', 'mahalanobis', 'minkowski',
+          'rogerstanimoto', 'russellrao', 'seuclidean', 'sokalmichener', 'sokalsneath',
+          'sqeuclidean', 'yule']
+
+        See the documentation for scipy.spatial.distance for details on these metrics.
     metric_params : dict, default=None
         Additional keyword arguments for the metric function.
-    log_progress: str (optional, default 'tqdm')
-        Method to use for logging progress. Options are 'tqdm' or 'notebook'
-    n_jobs: int (optional, default None)
-        The number of parallel jobs to run for pairwise distances calculation
+    log_progress : {'tqdm', 'notebook', 'none'}, default='tqdm'
+        Method to use for logging progress:
+
+        - 'tqdm': Use tqdm progress bar (for console)
+        - 'notebook': Use tqdm.notebook (for Jupyter notebooks)
+        - 'none': Disable progress logging
+    n_jobs : int, default=None
+        The number of parallel jobs to run for pairwise distances calculation.
+        None means 1 job unless explicitly set otherwise.
     verbose : int, default=0
         Verbosity level. If non-zero, progress is printed to stdout.
+        Higher values produce more detailed output.
     angle : float, default=0.5
-        Only used if method='barnes_hut'
-        This is the trade-off between speed and accuracy for Barnes-Hut T-SNE.
-        'angle' is the angular size (referred to as theta in [3]) of a distant
-        node as measured from a point. If this size is below 'angle' then it is
-        used as a summary node of all points contained within it.
-        This method is not very sensitive to changes in this parameter
+        Only used if method='barnes_hut'. This is the trade-off between speed and
+        accuracy for Barnes-Hut T-SNE. 'angle' is the angular size (referred to as
+        theta in [3]) of a distant node as measured from a point. If this size is
+        below 'angle' then it is used as a summary node of all points contained
+        within it. This method is not very sensitive to changes in this parameter
         in the range of 0.2 - 0.8. Angle less than 0.2 has quickly increasing
         computation time and angle greater 0.8 has quickly increasing error.
-    
-    Reference:
-    ---------
-    [1] Dong J, Pei T*, et al. Visualizing geographical flow data using ft-SNE, International Journal of Geographical Information Science, 2025.
+
+    Attributes
+    ----------
+    n_components : int
+        The number of embedding dimensions (set during fit).
+    n_samples : int
+        The number of samples in the input data (set during fit).
+    error_ : float
+        The final optimization error (KL divergence or Hellinger distance).
+    perplexity_ : float
+        The effective perplexity used (may differ from input if adjusted).
+
+    Examples
+    --------
+    >>> from geoflowkit import FlowDataFrame
+    >>> from geoflowkit.manifold import FTSNE
+
+    Basic usage with origin-destination flow data:
+
+    >>> fdf = FlowDataFrame.from_path("flows.csv", origin="origin", destination="dest")
+    >>> ft = FTSNE(perplexity=30, learning_rate='auto', random_state=42)
+    >>> embedding = ft.fit_transform(
+    ...     fdf,
+    ...     identity={'o': 0, 'd': 1}  # Map origin and destination to dims 0 and 1
+    ... )
+
+    Using intersection mapping for joint origin-destination modeling:
+
+    >>> embedding = ft.fit_transform(
+    ...     fdf,
+    ...     intersection={('o', 'd'): 0}  # Joint OD modeling on dimension 0
+    ... )
+
+    Using union mapping to aggregate multiple flow attributes:
+
+    >>> embedding = ft.fit_transform(
+    ...     fdf,
+    ...     union={('o', 'd'): (0, 1)}  # OD union on dimensions 0 and 1
+    ... )
+
+    Notes
+    -----
+    The ft-SNE algorithm consists of the following steps:
+
+    1. **Parameter validation**: Check that mappings and metrics are valid
+    2. **Embedding initialization**: Initialize low-dimensional embedding using PCA,
+       random initialization, or provided matrix
+    3. **Distance computation**: Compute pairwise distances for each flow attribute
+    4. **Probability computation**: Convert distances to probability distributions using
+       perplexity-based Gaussian kernels
+    5. **Optimization**: Iterate to minimize the divergence between high-dimensional
+       and embedding probability distributions
+
+    References
+    ----------
+    [1] Maaten, L. van der, & Hinton, G. (2008). Visualizing Data using t-SNE.
+        Journal of Machine Learning Research, 9, 2579-2605.
+    [2] Van der Maaten, L. (2014). Accelerating t-SNE using tree-based algorithms.
+        Journal of Machine Learning Research, 15(1), 3221-3245.
     """
     _parameter_constraints: dict = {
         "perplexity": [Interval(Real, 0, None, closed="neither")],
@@ -171,31 +263,68 @@ class FTSNE:
         else:
             self.pbar = None
 
-    def _check_params(self, fdf: Union[FlowDataFrame, dict], identity: dict = None, 
-                      intersection: dict = None, union: dict = None, 
+    def _check_params(self, fdf: Union[FlowDataFrame, dict], identity: dict = None,
+                      intersection: dict = None, union: dict = None,
                       metrics: dict = None) -> int:
-        """Check parameters and calculate embedding dimension
-        
+        """Check parameters and calculate embedding dimension.
+
+        This method validates all input parameters including the flow data,
+        mapping dictionaries, and metric specifications. It ensures that:
+
+        1. The FlowDataFrame or dict contains valid data
+        2. All mapping attributes reference valid columns/attributes
+        3. Dimensions are continuous (no gaps) and properly specified
+        4. Metrics are valid and reference used attributes
+
         Parameters
         ----------
         fdf : Union[FlowDataFrame, dict]
-            Input flow data. If dict, must contain 2D numpy arrays as values with same number of rows and columns
+            Input flow data. If dict, must contain 2D numpy arrays as values
+            with the same number of rows (samples) and columns (features).
         identity : dict, optional
-            Identity mapping
-        intersection : dict, optional 
-            Intersection mapping
+            Identity mapping that maps single features to embedding dimensions.
+            Keys are attribute names, values are dimension indices (int) or
+            tuples of indices for polynomial features.
+            Example: {'o': 0, 'd': 1}
+        intersection : dict, optional
+            Intersection mapping that combines multiple features to model
+            joint flow probability. Keys are tuples of attribute names,
+            values are dimension indices.
+            Example: {('o', 'd'): 0}
         union : dict, optional
-            Union mapping
-            
+            Union mapping that aggregates multiple features. Keys are tuples
+            of attribute names, values are dimension indices.
+            Example: {('o', 'd'): (0, 1)}
+        metrics : dict, optional
+            Metric specification for each attribute. Keys are attribute names,
+            values are valid metric strings.
+            Example: {'o': 'euclidean', 'd': 'haversine'}
+
         Returns
         -------
         int
-            Calculated embedding dimension
-            
+            The calculated embedding dimension (max_dim + 1).
+
         Raises
         ------
         ValueError
-            If any parameter is invalid
+            If any parameter is invalid, including:
+            - Precomputed values are not 2D numpy arrays
+            - Precomputed arrays have mismatched dimensions
+            - Mapping attributes are not valid
+            - Dimensions are not continuous
+            - Metrics reference unused attributes or are invalid
+
+        Examples
+        --------
+        >>> ft = FTSNE()
+        >>> n_components = ft._check_params(
+        ...     fdf,
+        ...     identity={'o': 0, 'd': 1},
+        ...     intersection={('o', 'd'): 2}
+        ... )
+        >>> print(n_components)
+        3
         """
         # Validate fdf type and get valid attributes
         if isinstance(fdf, dict):
@@ -300,51 +429,85 @@ class FTSNE:
         return self.n_components
     
     def _get_values(self, fdf: FlowDataFrame, attr: Union[str, tuple]):
-        # 定义一个内部函数，用于从属性中获取值
-        def _get_values_from_attr(attr):
-            # 如果属性不在fdf的列中，且属性为'o'或'd'，则返回get_coordinates函数的返回值
-            if attr not in fdf.columns and attr in ['o', 'd']:
-                return get_coordinates(getattr(fdf, attr))
-            # 如果属性不在fdf的列中，且属性为'length'或'angle'，则返回getattr函数的返回值，并将其重塑为(-1, 1)的形状
-            elif attr not in fdf.columns and attr in ['length', 'angle']:
-                return getattr(fdf, attr).values.reshape(-1, 1)
-            # 如果属性在fdf的列中，则返回fdf[attr]的值，并将其重塑为(-1, 1)的形状
-            elif attr in fdf.columns:
-                return fdf[attr].values.reshape(-1, 1)
-            else:
-                raise ValueError(f"Invalid attribute: {attr}, not in {fdf.columns} or ['o', 'd', 'length', 'angle']")
-        
-        if pd.api.types.is_scalar(attr):
-            return _get_values_from_attr(attr)
-        elif pd.api.types.is_list_like(attr):
-            values = []
-            for attr_ in attr:
-                values.append(_get_values_from_attr(attr_))
-            return np.concatenate(values, axis=1)
-        else:
-            raise ValueError(f"Invalid attribute type {type(attr)}, must be str or tuple")
-        
-    def _initialize_embedding(self, fdf: Union[FlowDataFrame, dict], identity: dict, 
-                            intersection: dict, union: dict, n_components: int):
-        """Initialize the embedding matrix
-        
+        """Extract feature values from flow data by attribute name.
+
+        This method retrieves the numerical values for a given attribute from the
+        FlowDataFrame. It handles special cases for flow-specific attributes ('o',
+        'd', 'length', 'angle') and regular column attributes.
+
         Parameters
         ----------
-        fdf : Union[FlowDataFrame, dict]
-            Input flow data. If dict, must contain 2D numpy arrays as values with same number of rows
-        identity : dict
-            Identity mapping
-        intersection : dict
-            Intersection mapping
-        union : dict
-            Union mapping
-        n_components : int
-            Number of embedding dimensions
-            
+        fdf : FlowDataFrame
+            The input flow data frame containing flow information.
+        attr : str or tuple of str
+            The attribute name(s) to extract values for. Can be:
+
+            - Regular column name (e.g., 'population', 'category')
+            - Flow attribute: 'o' (origin), 'd' (destination),
+              'length' (flow length), 'angle' (flow direction)
+
         Returns
         -------
         np.ndarray
-            Initial embedding matrix
+            A 2D numpy array of shape (n_samples, n_features) containing
+            the extracted values. For single attributes, this is (n_samples, 1).
+            For multiple attributes passed as a tuple, values are concatenated
+            along the feature axis.
+
+        Raises
+        ------
+        ValueError
+            If the attribute is not found in the FlowDataFrame columns or
+            is not a valid flow attribute ('o', 'd', 'length', 'angle').
+
+        Examples
+        --------
+        >>> values = ft._get_values(fdf, 'o')  # Get origin coordinates
+        >>> values = ft._get_values(fdf, 'length')  # Get flow lengths
+        >>> values = ft._get_values(fdf, ('o', 'd'))  # Get both origin and destination
+        """
+        
+    def _initialize_embedding(self, fdf: Union[FlowDataFrame, dict], identity: dict,
+                            intersection: dict, union: dict, n_components: int):
+        """Initialize the embedding matrix.
+
+        Creates an initial low-dimensional embedding for the optimization process.
+        The initialization method can be PCA-based (recommended), random, or
+        a provided custom matrix.
+
+        When using PCA initialization with identity/intersection/union mappings,
+        each attribute is individually scaled to [0, 1] range and reduced to
+        the specified embedding dimensions using PCA or polynomial features.
+
+        Parameters
+        ----------
+        fdf : Union[FlowDataFrame, dict]
+            Input flow data. If dict, must contain 2D numpy arrays as values
+            with the same number of rows (samples).
+        identity : dict
+            Identity mapping that maps single features to embedding dimensions.
+        intersection : dict
+            Intersection mapping that combines multiple features.
+        union : dict
+            Union mapping that aggregates multiple features.
+        n_components : int
+            Number of embedding dimensions (determined from mappings).
+
+        Returns
+        -------
+        np.ndarray
+            Initial embedding matrix of shape (n_samples, n_components).
+
+        Notes
+        -----
+        The initialization priority is: identity > intersection > union.
+        If a dimension is already assigned by identity mapping, intersection
+        and union mappings will skip that dimension and use random initialization
+        instead.
+
+        When using polynomial features (tuple of dimensions as value), the
+        polynomial degree equals the number of dimensions, creating interaction
+        terms between the original features.
         """
         # Get number of samples
         n_samples = len(fdf) if isinstance(fdf, FlowDataFrame) else next(iter(fdf.values())).shape[0]
@@ -457,38 +620,102 @@ class FTSNE:
         
         return embedding
 
-    def fit_transform(self, fdf: Union[FlowDataFrame, dict], 
-                      identity: dict = None, intersection: dict = None, union: dict = None, 
+    def fit_transform(self, fdf: Union[FlowDataFrame, dict],
+                      identity: dict = None, intersection: dict = None, union: dict = None,
                       metrics: dict = None, relation: str = 'probability', y=None):
-        """
-        Fit fdf into an embedded space and return that transformed output.
+        """Fit the flow data into an embedded space and return the embedding.
+
+        This is the main entry point for the ft-SNE algorithm. It validates all
+        parameters, computes the high-dimensional probability distributions from
+        flow attributes, and optimizes the low-dimensional embedding.
 
         Parameters
         ----------
         fdf : Union[FlowDataFrame, dict]
-            Input flow data. If dict, must contain 2D numpy arrays as values with same number of rows and cols. 
+            Input flow data. If FlowDataFrame, must have valid columns or
+            flow attributes ('o', 'd', 'length', 'angle'). If dict, must contain
+            2D numpy arrays as values with the same number of rows and columns.
         identity : dict, optional
-            Identity mapping, maps single feature of flow to a certain dimension in an embedding space. 
-            For example, {'o': 0} maps the origin points of the flow dataset to the first dimension of the embedding space.
+            Identity mapping that maps single features to embedding dimensions.
+            Each key is an attribute name, and its value is the target dimension
+            index (int) or tuple of indices for polynomial features.
+            Example: {'o': 0, 'd': 1} maps origin to dim 0 and destination to dim 1.
         intersection : dict, optional
-            Intersection mapping, maps multiple features of flow to a(or more) certain dimension in an embedding space.
-            For example, {('o', 'd'): 0} maps the OD points of the flow dataset to the first dimension of the embedding space.
+            Intersection mapping that models joint probability of multiple features.
+            Each key is a tuple of attribute names, and its value is the target
+            dimension(s).
+            Example: {('o', 'd'): 0} models joint origin-destination probability
+            on dimension 0.
         union : dict, optional
-            Union mapping, maps multiple features of flow to a(or more) certain dimension in an embedding space. 
-            For example, {('o', 'd'): (0, 1)} maps the od points of the flow dataset to the first and second dimension of the embedding space.
+            Union mapping that aggregates multiple features using minimum distance.
+            Each key is a tuple of attribute names, and its value is the target
+            dimension(s).
+            Example: {('o', 'd'): (0, 1)} maps OD union to dimensions 0 and 1.
         metrics : dict, optional
-            The metrics to use to compute distances of each features of the flow dataset.
-            If None, It will use metric defined in the __init__ function. 
-            For example, {'o': 'euclidean'} means that using euclidean to compute distances for the origin points of the flow dataset.
-        relation : str, optional
-            Method to calculate the intersection probability and the union probability, 'probability' or 'distance', default='probability'
+            The metric to use for each attribute's distance computation. Keys are
+            attribute names, values are valid metric strings.
+            If None, uses the metric defined in __init__ for all attributes.
+            Example: {'o': 'euclidean', 'd': 'haversine'}
+        relation : {'probability', 'distance'}, default='probability'
+            Method to calculate the intersection/union probability:
+
+            - 'probability': Use perplexity-based Gaussian kernels (recommended)
+            - 'distance': Use raw distance functions (max for intersection,
+              min for union)
+
         y : None
-            Ignored.
-        
+            Ignored. Exists for API compatibility with sklearn.
+
         Returns
         -------
         embedding : np.ndarray
             Embedding of the training data in low-dimensional space.
+            Shape is (n_samples, n_components) where n_components is determined
+            from the maximum dimension specified in mappings.
+
+        Raises
+        ------
+        ValueError
+            - If no mapping (identity, intersection, union) is specified
+            - If relation is not 'probability' or 'distance'
+            - If 'barnes_hut' method is used with intersection/union mappings
+            - If 'distance' relation is used with 'barnes_hut' method
+        NotImplementedError
+            - If 'barnes_hut' method is used with intersection or union mappings
+
+        Warns
+        -----
+        RuntimeWarning
+            - If 'hd' loss function is requested with 'barnes_hut' method,
+              as HD is not supported; KL divergence is used instead.
+
+        Examples
+        --------
+        >>> from geoflowkit import FlowDataFrame
+        >>> from geoflowkit.manifold import FTSNE
+
+        Basic usage with identity mapping:
+
+        >>> fdf = FlowDataFrame.from_path("flows.csv", origin="origin", destination="dest")
+        >>> ft = FTSNE(perplexity=30, random_state=42, verbose=1)
+        >>> embedding = ft.fit_transform(fdf, identity={'o': 0, 'd': 1})
+
+        Using intersection mapping for flow clustering:
+
+        >>> ft = FTSNE(perplexity=50, loss_func='hd')
+        >>> embedding = ft.fit_transform(
+        ...     fdf,
+        ...     identity={'length': 0, 'angle': 1},
+        ...     intersection={('o', 'd'): 2}
+        ... )
+
+        Using custom metrics:
+
+        >>> embedding = ft.fit_transform(
+        ...     fdf,
+        ...     identity={'o': 0},
+        ...     metrics={'o': 'haversine'}
+        ... )
         """
         # Check parameters and get embedding dimension
         if identity is None and intersection is None and union is None:
@@ -511,6 +738,41 @@ class FTSNE:
         return self._fit(fdf, embedding, identity, intersection, union, metrics, relation=relation)
     
     def _fit(self, fdf, embedding, identity, intersection, union, metrics, relation):
+        """Compute probability distributions and run the optimization.
+
+        This method handles the core ft-SNE computation:
+        1. Computes pairwise distances for each flow attribute
+        2. Converts distances to probability distributions using perplexity
+        3. Runs gradient descent optimization to find the embedding
+
+        Parameters
+        ----------
+        fdf : Union[FlowDataFrame, dict]
+            Input flow data.
+        embedding : np.ndarray
+            Initial embedding matrix of shape (n_samples, n_components).
+        identity : dict
+            Identity mapping dictionary.
+        intersection : dict
+            Intersection mapping dictionary.
+        union : dict
+            Union mapping dictionary.
+        metrics : dict
+            Metrics dictionary for distance computation.
+        relation : {'probability', 'distance'}
+            Method for computing joint probabilities.
+
+        Returns
+        -------
+        np.ndarray
+            The optimized embedding matrix of shape (n_samples, n_components).
+
+        Notes
+        -----
+        This method modifies pijs and projections lists that are passed to
+        the optimization routine. The probability distributions are scaled
+        by early_exaggeration during the initial optimization phase.
+        """
         if self.learning_rate == "auto":
             # See issue #18018
             self.learning_rate_ = self.n_samples / self.early_exaggeration / 4
@@ -629,6 +891,49 @@ class FTSNE:
         return self._ft_sne(embedding, pijs, projections)
 
     def _ft_sne(self, embedding, pijs, projections):
+        """Optimize the embedding using gradient descent.
+
+        Performs the two-phase optimization schedule:
+        1. Early exaggeration phase: Higher learning rate with momentum 0.5
+        2. Main optimization phase: Standard learning rate with momentum 0.8
+
+        Parameters
+        ----------
+        embedding : np.ndarray
+            Initial embedding matrix of shape (n_samples, n_components).
+        pijs : list of np.ndarray
+            List of high-dimensional probability distributions. Each pij
+            corresponds to one mapping (identity, intersection, or union).
+        projections : list
+            List of dimension indices/tuples corresponding to each pij,
+            specifying which embedding dimensions each pij projects to.
+
+        Returns
+        -------
+        np.ndarray
+            The optimized embedding matrix of shape (n_samples, n_components).
+
+        Attributes
+        ----------
+        error_ : float
+            The final optimization error (KL divergence or Hellinger distance).
+
+        Notes
+        -----
+        The optimization uses a momentum-based gradient descent with two phases:
+
+        Phase 1 (early exaggeration):
+        - Duration: early_exaggeration_iter iterations
+        - Learning rate: self.learning_rate_
+        - Momentum: 0.5
+        - Pijs scaled by early_exaggeration factor
+
+        Phase 2 (main optimization):
+        - Duration: max_iter - early_exaggeration_iter iterations
+        - Learning rate: self.learning_rate_
+        - Momentum: 0.8
+        - Pijs at normal scale
+        """
         if self.loss_func == 'kl':
             obj_func = kl_grad if self.method=='exact' else kl_grad_bh
         elif self.loss_func == 'hd':
