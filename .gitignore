@@ -7,3 +7,4 @@ build/
 geoflowkit.egg-info/
 
 .claude/
+.worktrees/
