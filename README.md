@@ -234,6 +234,10 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `read_csv(file_path, use_cols, crs=None, **kwargs)`: Read flow data from CSV
 - `read_file(file_path, **kwargs)`: Read flow data from vector file
 - `pairwise_distances(fdf, distance='max', ...)`: Calculate flow distance matrix
+- `k_neighbor_distances(fdf, k, distance='max', ...)`: K-order nearest neighbor distances
+- `snn_distance(fdf, k, ...)`: Shared nearest neighbor distance
+- `flow_entropy(fdf, cell_area=None, ...)`: Flow space entropy
+- `flow_divergence(fdf, n_directions=6, ...)`: Flow directional entropy
 - `k_func(fdf, dr, k=1, distance='max', ...)`: K function for spatial clustering detection
 - `l_func(fdf, dr, k=1, distance='max', ...)`: L function for spatial clustering detection
 - `local_l_func(fdf, r, distance='max', ...)`: Local L function for individual flows

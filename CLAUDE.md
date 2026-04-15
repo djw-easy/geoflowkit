@@ -58,7 +58,7 @@ geoflowkit/
 ├── flowdataframe.py     # FlowDataFrame (geopandas GeoDataFrame subclass)
 ├── base.py              # FlowBase mixin with shared flow properties
 ├── io.py                # read_csv, read_file, flows_from_od, flows_from_geometry
-├── flowprocess.py       # pairwise_distances
+├── flowmetrics.py       # pairwise_distances, k_neighbor_distances, snn_distance, flow_entropy, flow_divergence
 ├── clustering/          # KMedoidFlow, DBSCANFlow, kmedoid(), dbscan()
 ├── manifold/           # FTSNE for dimensionality reduction
 │   └── ftsne/
@@ -82,10 +82,14 @@ geoflowkit/
 - Derived properties: `length` (distance between o and d), `angle` (direction in radians)
 - Flow DataFrame can contain additional attributes (value, category, etc.)
 
-### Flow Distance Calculations
+### Flow Metrics
 - `pairwise_distances(fdf, distance='max')` computes flow-to-flow distances
 - Distance methods: 'max' (default), 'sum', 'min', 'mean', 'weighted'
 - Weighted distance incorporates flow lengths when `length=True`
+- `k_neighbor_distances(fdf, k)` returns k-order nearest neighbor distances for each flow
+- `snn_distance(fdf, k)` computes Shared Nearest Neighbor distance (based on origin/destination KNN intersections)
+- `flow_entropy(fdf, cell_area=None)` calculates flow space entropy
+- `flow_divergence(fdf, n_directions=6)` calculates flow directional entropy
 
 ## Notable Implementation Details
 

@@ -1,6 +1,6 @@
 import numpy as np
 from geoflowkit.flowdataframe import FlowDataFrame
-from geoflowkit.flowprocess import pairwise_distances
+from geoflowkit.flowmetrics import pairwise_distances
 
 
 def nth_largest(arr, n, axis):

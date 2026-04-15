@@ -1,6 +1,6 @@
 import numpy as np
 from geoflowkit.flowdataframe import FlowDataFrame
-from geoflowkit.flowprocess import pairwise_distances
+from geoflowkit.flowmetrics import pairwise_distances
 from geoflowkit.spatial.utils import _second_order_density, second_order_density
 
 

@@ -4,7 +4,7 @@ import numpy as np
 import shapely
 
 from geoflowkit import FlowDataFrame
-from geoflowkit.flowprocess import pairwise_distances
+from geoflowkit.flowmetrics import pairwise_distances
 
 
 class KMedoidFlow:
