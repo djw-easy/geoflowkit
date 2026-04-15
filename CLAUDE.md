@@ -59,12 +59,17 @@ geoflowkit/
 ├── base.py              # FlowBase mixin with shared flow properties
 ├── io.py                # read_csv, read_file, flows_from_od, flows_from_geometry
 ├── flowmetrics.py       # pairwise_distances, k_neighbor_distances, snn_distance, flow_entropy, flow_divergence
-├── clustering/          # KMedoidFlow, DBSCANFlow, kmedoid(), dbscan()
-├── manifold/           # FTSNE for dimensionality reduction
+├── spatial/             # Spatial heterogeneity of geographical flow
+│   ├── utils.py         # nth_largest, second_order_density
+│   ├── kl_function.py   # k_func, l_func, local_l_func
+│   └── centrality.py    # i_index
+├── clustering/          # Flow clustering
+│   ├── kmedoid.py       # KMedoidFlow, kmedoid()
+│   └── dbscan.py        # DBSCANFlow, dbscan()
+├── manifold/            # FTSNE for dimensionality reduction
 │   └── ftsne/
-│       ├── ftsne.py    # Main FTSNE class
-│       └── utils.py    # Gradient descent, KL divergence, probability calculations
-└── spatial/             # k_func, l_func, local_l_func, i_index (centrality)
+│       ├── ftsne.py     # Main FTSNE class
+│       └── utils.py     # Gradient descent, KL divergence, probability calculations
 ```
 
 ### Key Design Patterns
@@ -96,4 +101,4 @@ geoflowkit/
 - FTSNE uses sklearn's parameter validation via `@validate_params` decorator
 - Clustering algorithms (kmedoid, dbscan) use flow-specific distance metrics
 - The `within()` method checks both origin AND destination points against a mask
-- FlowSeries.plot() renders flows as arrows using matplotlib quiver
+- FlowSeries.plot() and FlowDataFrame.plot(kind='arrow') render flows as arrows using matplotlib quiver; FlowDataFrame.plot() additionally supports categorical columns for multi-color plotting and a zoom parameter to control the view extent
