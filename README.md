@@ -246,6 +246,9 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `Flow`: Geometry object representing an origin-destination pair
 - `FlowSeries`: pandas Series subclass for storing Flow objects
 - `FlowDataFrame`: pandas DataFrame subclass with Flow geometry column
+- `KMedoidFlow`: K-medoid clustering for flow data
+- `DBSCANFlow`: DBSCAN clustering for flow data
+- `FTSNE`: A Variant of t-SNE for Flow Data
 
 ### Key Functions
 
@@ -266,6 +269,7 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `i_index(fdf, zones, alpha=None, od_type='d', ...)`: I-index for location irreplaceability
 - `second_order_density(fdf, ...)`: Second-order density of flows
 - `FlowSeries / FlowDataFrame methods`:
+  - `plot()`: Render flows as arrows using matplotlib quiver
   - `within(mask)`: Select flows whose origin and destination are both inside mask
   - `clip(mask)`: Clip flows to a mask polygon
   - `distance(other, distance='max', ...)`: Calculate distance to another flow or FlowSeries

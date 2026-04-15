@@ -689,10 +689,6 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             from shapely import get_coordinates
             origins = get_coordinates(self.o)
             destinations = get_coordinates(self.d)
-            min_x = min(np.min(origins[:, 0]), np.min(destinations[:, 0]))
-            max_x = max(np.max(origins[:, 0]), np.max(destinations[:, 0]))
-            min_y = min(np.min(origins[:, 1]), np.min(destinations[:, 1]))
-            max_y = max(np.max(origins[:, 1]), np.max(destinations[:, 1]))
             u = destinations[:, 0] - origins[:, 0]
             v = destinations[:, 1] - origins[:, 1]
 
@@ -706,13 +702,10 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
 
             if C is not None and not is_numeric:
                 # Categorical column: group by category and plot each group
-                import matplotlib.pyplot as plt
-                import matplotlib.cm as cm
-
                 # Get unique categories and assign colors
                 categories = np.unique(C)
                 n_cats = len(categories)
-                cmap = cm.get_cmap(kwargs.get('cmap', 'tab10'), n_cats)
+                cmap = plt.get_cmap(kwargs.get('cmap', 'tab10'), n_cats)
 
                 for idx, cat in enumerate(categories):
                     mask = C == cat
@@ -733,12 +726,19 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
                 ax.quiver(origins[:, 0], origins[:, 1], u, v, C, **quiver_kwargs)
             else:
                 ax.quiver(origins[:, 0], origins[:, 1], u, v, **quiver_kwargs)
+
+            min_x = min(np.min(origins[:, 0]), np.min(destinations[:, 0]))
+            max_x = max(np.max(origins[:, 0]), np.max(destinations[:, 0]))
+            min_y = min(np.min(origins[:, 1]), np.min(destinations[:, 1]))
+            max_y = max(np.max(origins[:, 1]), np.max(destinations[:, 1]))
+
             x_eps = zoom * (max_x - min_x)
             ax.set_xlim(min_x - x_eps, max_x + x_eps)
             ax.set_xlim(auto=True)
             y_eps = zoom * (max_y - min_y)
             ax.set_ylim(min_y - y_eps, max_y + y_eps)
             ax.set_ylim(auto=True)
+
             return ax
         else:
             return super().plot(kind=kind, ax=ax, figsize=figsize, **kwargs)

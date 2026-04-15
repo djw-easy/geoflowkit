@@ -101,4 +101,4 @@ geoflowkit/
 - FTSNE uses sklearn's parameter validation via `@validate_params` decorator
 - Clustering algorithms (kmedoid, dbscan) use flow-specific distance metrics
 - The `within()` method checks both origin AND destination points against a mask
-- FlowSeries.plot() and FlowDataFrame.plot(kind='arrow') render flows as arrows using matplotlib quiver; FlowDataFrame.plot() additionally supports categorical columns for multi-color plotting and a zoom parameter to control the view extent
+- FlowSeries.plot() and FlowDataFrame.plot(kind='arrow') render flows as arrows using matplotlib quiver and support a zoom parameter to control the view extent; FlowDataFrame.plot() additionally supports categorical columns for multi-color plotting

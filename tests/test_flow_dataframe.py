@@ -124,6 +124,69 @@ class TestFlowDataFrame(unittest.TestCase):
         self.assertEqual(len(result), 6)
         self.assertEqual(result.crs, "EPSG:4326")
 
+    def test_plot_arrow(self):
+        """Test plot with kind='arrow'"""
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+        import os
+
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        ax = df.plot(kind='arrow')
+        self.assertIsNotNone(ax)
+
+        # Save to file to verify image is generated
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            fig = ax.get_figure()
+            fig.savefig(f.name)
+            temp_path = f.name
+        self.assertTrue(os.path.exists(temp_path))
+        os.unlink(temp_path)
+
+    def test_plot_arrow_with_numeric_column(self):
+        """Test plot with numeric column"""
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+        import os
+
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        ax = df.plot(kind='arrow', column='value')
+        self.assertIsNotNone(ax)
+
+        # Save to file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            fig = ax.get_figure()
+            fig.savefig(f.name)
+            temp_path = f.name
+        self.assertTrue(os.path.exists(temp_path))
+        os.unlink(temp_path)
+
+    def test_plot_arrow_with_categorical_column(self):
+        """Test plot with categorical column"""
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+        import os
+
+        data = self.data.copy()
+        data['category'] = ['A', 'B', 'A']
+        df = FlowDataFrame(data, crs="EPSG:4326")
+        ax = df.plot(kind='arrow', column='category')
+        self.assertIsNotNone(ax)
+
+        # Check that legend was added for categorical data
+        legend = ax.get_legend()
+        self.assertIsNotNone(legend)
+
+        # Save to file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            fig = ax.get_figure()
+            fig.savefig(f.name)
+            temp_path = f.name
+        self.assertTrue(os.path.exists(temp_path))
+        os.unlink(temp_path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -157,9 +157,63 @@ class TestFlowSeries(unittest.TestCase):
         """Test plot method runs without error"""
         import matplotlib
         matplotlib.use("Agg")
+        import tempfile
+        import os
+
         fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[1, 2], [3, 4]])], crs="EPSG:4326")
         ax = fs.plot()
         self.assertIsNotNone(ax)
+
+        # Save to file to verify image is generated
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            fig = ax.get_figure()
+            fig.savefig(f.name)
+            temp_path = f.name
+        self.assertTrue(os.path.exists(temp_path))
+        os.unlink(temp_path)
+
+    def test_plot_with_numeric_C(self):
+        """Test plot with numeric C array"""
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+        import os
+
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[1, 2], [3, 4]]), Flow([[2, 2], [4, 4]])], crs="EPSG:4326")
+        C = np.array([1.0, 2.0, 3.0])
+        ax = fs.plot(C=C)
+        self.assertIsNotNone(ax)
+
+        # Save to file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            fig = ax.get_figure()
+            fig.savefig(f.name)
+            temp_path = f.name
+        self.assertTrue(os.path.exists(temp_path))
+        os.unlink(temp_path)
+
+    def test_plot_with_categorical_C(self):
+        """Test plot with categorical (non-numeric) C array"""
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+        import os
+
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[1, 2], [3, 4]]), Flow([[2, 2], [4, 4]]), Flow([[3, 3], [5, 5]])], crs="EPSG:4326")
+        C = np.array(['A', 'B', 'A', 'B'])
+        ax = fs.plot(C=C)
+        self.assertIsNotNone(ax)
+        # Check that legend was added for categorical data
+        legend = ax.get_legend()
+        self.assertIsNotNone(legend)
+
+        # Save to file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            fig = ax.get_figure()
+            fig.savefig(f.name)
+            temp_path = f.name
+        self.assertTrue(os.path.exists(temp_path))
+        os.unlink(temp_path)
 
     def test_geometry_access(self):
         """Test geometry access"""

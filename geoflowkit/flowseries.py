@@ -285,6 +285,7 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
         ax: Union[plt.Axes, None] = None,
         C: Union[np.ndarray, None] = None,
         figsize: Union[tuple, None] = None,
+        zoom: float = 0.03,
         **kwargs: Any,
     ) -> plt.Axes:
         """Plot flows as arrows using matplotlib quiver.
@@ -298,19 +299,23 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
             Numeric data that defines the arrow colors by colormapping
             via norm and cmap. Does not support explicit colors.
             Must match the number of arrow locations.
+            For categorical (non-numeric) data, each category is
+            plotted with a different color and a legend is displayed.
         figsize : tuple, optional
             The size of the figure to create in inches as ``(width, height)``.
+        zoom : float, optional, default: 0.03
+            The zoom level for the plot.
         **kwargs : dict
             Additional keyword arguments passed to :meth:`matplotlib.axes.Axes.quiver`.
 
         Returns
         -------
-        matplotlib.axes.Axes
+        ax : matplotlib.axes.Axes
             The axes on which the plot was drawn.
         """
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
-        
+
         from shapely import get_coordinates
         origins = get_coordinates(self.o)
         destinations = get_coordinates(self.d)
@@ -326,9 +331,47 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
         quiver_kwargs.update(kwargs)
 
         if C is not None:
-            ax.quiver(origins[:, 0], origins[:, 1], u, v, C, **quiver_kwargs)
+            C = np.asarray(C)
+            is_numeric = np.issubdtype(C.dtype, np.number)
+            if not is_numeric:
+                # Categorical column: group by category and plot each group
+                # Get unique categories and assign colors
+                categories = np.unique(C)
+                n_cats = len(categories)
+                cmap = plt.get_cmap(kwargs.get('cmap', 'tab10'), n_cats)
+
+                for idx, cat in enumerate(categories):
+                    mask = C == cat
+                    if np.sum(mask) == 0:
+                        continue
+                    color = cmap(idx)
+                    ax.quiver(
+                        origins[mask, 0], origins[mask, 1],
+                        u[mask], v[mask],
+                        color=color,
+                        label=str(cat),
+                        **quiver_kwargs
+                    )
+                # Add legend if not already present in kwargs
+                if 'legend' not in kwargs:
+                    ax.legend(loc='best', framealpha=0.5)
+            else:
+                ax.quiver(origins[:, 0], origins[:, 1], u, v, C, **quiver_kwargs)
         else:
             ax.quiver(origins[:, 0], origins[:, 1], u, v, **quiver_kwargs)
+
+        min_x = min(np.min(origins[:, 0]), np.min(destinations[:, 0]))
+        max_x = max(np.max(origins[:, 0]), np.max(destinations[:, 0]))
+        min_y = min(np.min(origins[:, 1]), np.min(destinations[:, 1]))
+        max_y = max(np.max(origins[:, 1]), np.max(destinations[:, 1]))
+
+        x_eps = zoom * (max_x - min_x)
+        ax.set_xlim(min_x - x_eps, max_x + x_eps)
+        ax.set_xlim(auto=True)
+        y_eps = zoom * (max_y - min_y)
+        ax.set_ylim(min_y - y_eps, max_y + y_eps)
+        ax.set_ylim(auto=True)
+
         return ax
 
 
