@@ -1,29 +1,36 @@
+from typing import Any, Union
+
 import numpy as np
+
 from geoflowkit.flowdataframe import FlowDataFrame
 from geoflowkit.flowmetrics import pairwise_distances
 
 
-def nth_largest(arr, n, axis):
-    """Calculate the Nth largest number along the specified axis.
+def nth_largest(
+    arr: np.ndarray,
+    n: int,
+    axis: int,
+) -> np.ndarray:
+    """Find the Nth largest number along the specified axis.
 
     Parameters
     ----------
     arr : np.ndarray
-        Input array of numbers
+        Input array of numbers.
     n : int
-        The Nth largest number to find (starting from 1)
+        The Nth largest number to find (1 = largest, 2 = second largest, etc.).
     axis : int
-        The axis along which to calculate the Nth largest number
+        The axis along which to find the Nth largest number.
 
     Returns
     -------
     np.ndarray
-        The Nth largest number along the specified axis
+        The Nth largest number(s) along the specified axis.
 
     Raises
     ------
     ValueError
-        If n is greater than the length of the specified axis
+        If ``n`` is greater than the length of the specified axis.
     """
     if n > arr.shape[axis]:
         raise ValueError("n cannot be greater than the length of the specified axis")
@@ -37,7 +44,12 @@ def nth_largest(arr, n, axis):
     return np.squeeze(result, axis=axis)
 
 
-def _second_order_density(dis_matrix, distance='max', k=1, mask=None):
+def _second_order_density(
+    dis_matrix: np.ndarray,
+    distance: str = "max",
+    k: int = 1,
+    mask: Union[np.ndarray, None] = None,
+) -> float:
     """Calculate the second-order density of flows.
 
     Parameters
@@ -90,7 +102,14 @@ def _second_order_density(dis_matrix, distance='max', k=1, mask=None):
     return available_flow_num / volume
 
 
-def second_order_density(fdf: FlowDataFrame=None, dis_matrix=None, distance='max', k=1, mask=None, **kwargs):
+def second_order_density(
+    fdf: Union[FlowDataFrame, None] = None,
+    dis_matrix: Union[np.ndarray, None] = None,
+    distance: str = "max",
+    k: int = 1,
+    mask: Union[Any, None] = None,
+    **kwargs: Any,
+) -> float:
     """Calculate the second-order density for a FlowDataFrame.
 
     Parameters

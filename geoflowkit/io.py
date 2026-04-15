@@ -1,4 +1,5 @@
 import warnings
+from typing import Any, Union, overload
 
 import numpy as np
 import pandas as pd
@@ -11,27 +12,31 @@ from geoflowkit.flowseries import FlowSeries
 from geoflowkit.flowdataframe import FlowDataFrame
 
 
-def flows_from_od(o, d, crs=None):
-    """Create a FlowSeries from origin-destination point pairs.
+def flows_from_od(
+    o: Any,
+    d: Any,
+    crs: Union[str, int, None] = None,
+) -> FlowSeries:
+    """Create a FlowSeries from separate origin and destination coordinate arrays.
 
     Parameters
     ----------
     o : array-like
-        Origin points as a 2D array of coordinates (n_points x 2)
+        Origin points as a 2D array of shape (n_points, 2).
     d : array-like
-        Destination points as a 2D array of coordinates (n_points x 2)
-    crs : str, optional
-        Coordinate reference system identifier
+        Destination points as a 2D array of shape (n_points, 2).
+    crs : str or int, optional
+        Coordinate reference system identifier.
 
     Returns
     -------
     FlowSeries
-        A series of Flow objects connecting each origin-destination pair
+        A series of Flow objects connecting each origin-destination pair.
 
     Raises
     ------
     ValueError
-        If input arrays are not 2D or have mismatched lengths
+        If input arrays are not 2D or have mismatched lengths.
     """
     o_points = np.asarray(o, dtype=np.float64)
     d_points = np.asarray(d, dtype=np.float64)
@@ -49,30 +54,40 @@ def flows_from_od(o, d, crs=None):
     return FlowSeries(flows, crs=crs)
 
 
-def flows_from_geometry(geometry, crs=None):
+def flows_from_geometry(
+    geometry: Any,
+    crs: Union[str, int, None] = None,
+) -> FlowSeries:
     """Create a FlowSeries from geometric objects.
 
     Parameters
     ----------
     geometry : array-like
-        Input geometries that can be:
-        - Flow objects
+        Input geometries. Supported types:
+
+        - Flow objects (passed through unchanged)
         - LineString objects (uses first and last points)
-        - MultiPoint objects (uses first and last points)
-    crs : str, optional
-        Coordinate reference system identifier
+        - MultiPoint objects with exactly 2 points (uses both points)
+    crs : str or int, optional
+        Coordinate reference system identifier.
 
     Returns
     -------
     FlowSeries
-        A series of Flow objects created from the input geometries
+        A series of Flow objects created from the input geometries.
 
     Raises
     ------
     ValueError
-        If there is a CRS mismatch between input and specified CRS
+        If there is a CRS mismatch between input and specified CRS.
     TypeError
-        If input contains unsupported geometry types or is not array-like
+        If input contains unsupported geometry types or is not array-like.
+
+    Warns
+    -----
+    UserWarning
+        If LineString or MultiPoint geometries have more than 2 points,
+        only the first and last are used.
     """
     if (
         hasattr(geometry, "crs")
@@ -145,42 +160,79 @@ def flows_from_geometry(geometry, crs=None):
         raise TypeError("Input geometry must be an array-like object. ")
 
 
-def read_csv(file_path, use_cols, crs=None, **kwargs) -> FlowDataFrame:
-    """
-    Read GeoFlow data from a csv file.
+@overload
+def read_csv(
+    file_path: str,
+    use_cols: list[str],
+    crs: Union[str, int, None] = None,
+    **kwargs: Any,
+) -> FlowDataFrame: ...
+@overload
+def read_csv(
+    file_path: str,
+    use_cols: list[int],
+    crs: Union[str, int, None] = None,
+    **kwargs: Any,
+) -> FlowDataFrame: ...
+def read_csv(
+    file_path: str,
+    use_cols: Any,
+    crs: Union[str, int, None] = None,
+    **kwargs: Any,
+) -> FlowDataFrame:
+    """Read flow data from a CSV file.
 
-    Parameters:
-    -----------
-    file_path (str): The path to the csv file.
-    use_cols (list): The columns to use, which are the columns of the X and Y coordinates of the origin point of the flow,
-        and the columns of the X and Y coordinates of the destination point, respectively.
-    crs (str or dict, optional): The coordinate reference system of the GeoFlow data.
-    **kwargs: Additional arguments passed to pandas.read_csv.
+    Parameters
+    ----------
+    file_path : str
+        Path to the CSV file.
+    use_cols : list of str or int
+        Four columns specifying origin_x, origin_y, destination_x, destination_y.
+        Can be column names (str) or column indices (int).
+    crs : str or int, optional
+        Coordinate reference system identifier.
+    **kwargs : dict
+        Additional arguments passed to :func:`pandas.read_csv`.
 
-    Returns:
-    --------
-    FlowDataFrame: The GeoFlow data.
+    Returns
+    -------
+    FlowDataFrame
+        A FlowDataFrame with Flow geometry and any other columns from the CSV.
+
+    Raises
+    ------
+    ValueError
+        If ``use_cols`` does not contain exactly 4 elements.
     """
     if len(use_cols) != 4:
         raise ValueError("Invalid columns, should be four columns, like [origin_x, origin_y, destination_x, destination_y]")
     df = pd.read_csv(file_path, **kwargs)
 
-    geometry = flows_from_od(df[use_cols[:2]].values, df[use_cols[2:]].values, crs=crs)
+    if all(isinstance(c, int) for c in use_cols):
+        o_data = df.iloc[:, use_cols[:2]].values
+        d_data = df.iloc[:, use_cols[2:]].values
+    else:
+        o_data = df[use_cols[:2]].values
+        d_data = df[use_cols[2:]].values
+    geometry = flows_from_od(o_data, d_data, crs=crs)
 
     return FlowDataFrame(df, geometry=geometry, crs=crs)
 
 
-def read_file(file_path, **kwargs) -> FlowDataFrame:
-    """
-    Read GeoFlow data from a file.
-    
-    Parameters:
-    -----------
-    file_path (str): The path to the file.
-    
-    Returns:
-    --------
-    FlowDataFrame: The GeoFlow data.
+def read_file(file_path: str, **kwargs: Any) -> FlowDataFrame:
+    """Read flow data from a vector file (GeoPackage, GeoJSON, Shapefile, etc.).
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the vector file.
+    **kwargs : dict
+        Additional arguments passed to :func:`geopandas.read_file`.
+
+    Returns
+    -------
+    FlowDataFrame
+        A FlowDataFrame with Flow geometry and any other columns from the file.
     """
     gdf = gpd.read_file(file_path, **kwargs)
     gdf['geometry'] = flows_from_geometry(gdf['geometry'])

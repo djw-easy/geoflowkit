@@ -2,32 +2,38 @@ import shapely
 from shapely.geometry import point
 from shapely.errors import EmptyPartError
 from shapely.geometry.base import BaseMultipartGeometry
+from typing import Any, Sequence, Union
 
 __all__ = ["Flow"]
 
 
 class Flow(BaseMultipartGeometry):
-    """
-    A collection of two Points representing origin and destination.
+    """A pair of points representing the origin and destination of a flow.
 
-    A Flow represents a movement from an origin point to a destination point.
+    A Flow is a specialized 2-point MultiPoint geometry that represents
+    a movement from an origin point to a destination point.
 
     Parameters
     ----------
-    points : sequence
+    od_points : sequence, optional
         A sequence of two Points, or a sequence of (x, y [,z]) numeric coordinate
         pairs or triples, or an array-like of shape (2, 2) or (2, 3).
+        If None, an empty Flow is created.
 
     Attributes
     ----------
-    geoms : sequence
-        A sequence of two Points (origin, destination)
+    o : shapely.Point
+        The origin point.
+    d : shapely.Point
+        The destination point.
+    geoms : tuple
+        A tuple of two Points: (origin, destination).
 
     Examples
     --------
-    Construct a Flow
+    Construct a Flow from coordinate pairs:
 
-    >>> from shapely import Point
+    >>> from geoflowkit import Flow
     >>> flow = Flow([[0.0, 0.0], [1.0, 2.0]])
     >>> len(flow.geoms)
     2
@@ -35,11 +41,32 @@ class Flow(BaseMultipartGeometry):
     <Point POINT (0 0)>
     >>> flow.d
     <Point POINT (1 2)>
+
+    Construct a Flow from Point objects:
+
+    >>> from shapely import Point
+    >>> flow = Flow([Point(0, 0), Point(1, 2)])
+    >>> flow.o
+    <Point POINT (0 0)>
     """
 
     __slots__ = []
 
-    def __new__(self, od_points=None):
+    def __new__(
+        cls,
+        od_points: Union[
+            Sequence[Sequence[float]],
+            Sequence["Flow"],
+            None,
+        ] = None,
+    ) -> "Flow":
+        """Create a new Flow instance.
+
+        Parameters
+        ----------
+        od_points : sequence, optional
+            Origin-destination coordinate pairs. See :class:`Flow` for details.
+        """
         if od_points is None:
             # allow creation of empty Flows, to support unpickling
             return shapely.from_wkt("MULTIPOINT EMPTY")
@@ -64,13 +91,18 @@ class Flow(BaseMultipartGeometry):
         return geom
 
     @property
-    def __geo_interface__(self):
+    def __geo_interface__(self) -> dict[str, Any]:
         return {
             "type": "Flow",
             "coordinates": tuple(g.coords[0] for g in self.geoms),
         }
 
-    def svg(self, scale_factor=1.0, fill_color=None, opacity=None):
+    def svg(
+        self,
+        scale_factor: float = 1.0,
+        fill_color: Union[str, None] = None,
+        opacity: Union[float, None] = None,
+    ) -> str:
         """Returns a group of SVG circle elements for the Flow geometry.
 
         Parameters
@@ -94,27 +126,47 @@ class Flow(BaseMultipartGeometry):
         )
 
     @property
-    def wkt(self):
-        """Return the Well-Known Text representation of the geometry."""
+    def wkt(self) -> str:
+        """Well-Known Text representation of the Flow geometry.
+
+        Returns
+        -------
+        str
+            WKT string in the form ``FLOW (x1 y1 x2 y2)``.
+        """
         if self.is_empty:
             return "FLOW EMPTY"
         coords = ", ".join(f"{p.x} {p.y}" for p in self.geoms)
         return f"FLOW ({coords})"
 
     @property
-    def o(self):
-        """Origin point."""
+    def o(self) -> point.Point:
+        """Origin point of the flow.
+
+        Returns
+        -------
+        shapely.Point
+            The first point of the Flow (origin).
+        """
         return self.geoms[0]
 
     @property
-    def d(self):
-        """Destination point."""
+    def d(self) -> point.Point:
+        """Destination point of the flow.
+
+        Returns
+        -------
+        shapely.Point
+            The second point of the Flow (destination).
+        """
         return self.geoms[1]
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """Return the WKT representation of the Flow."""
         return self.wkt
 
-    def __repr__(self):
+    def __repr__(self) -> str:
+        """Return the WKT representation of the Flow."""
         return self.wkt
 
 
@@ -131,7 +183,7 @@ import functools
 _original_to_wkt = shapely.to_wkt
 
 @functools.wraps(_original_to_wkt)
-def _flow_to_wkt(geom, **kwargs):
+def _flow_to_wkt(geom: BaseMultipartGeometry, **kwargs: Any) -> str:
     if type(geom) is Flow:  # Use type() check, not isinstance, to avoid matching subclasses
         return geom.wkt
     return _original_to_wkt(geom, **kwargs)

@@ -1,6 +1,7 @@
 import json
 import warnings
 from functools import wraps
+from typing import Any, Union, overload
 
 import shapely
 import numpy as np
@@ -12,7 +13,6 @@ from geopandas.base import GeoPandasBase
 from geopandas.base import is_geometry_type
 from geopandas import GeoDataFrame, GeoSeries
 from geopandas.array import GeometryArray, GeometryDtype
-
 
 from geoflowkit.flow import Flow
 from geoflowkit.base import FlowBase
@@ -29,14 +29,22 @@ crs_mismatch_error = (
 )
 
 
-def _ensure_geometry(data, crs=None):
-    """
-    Ensure the data is of geometry dtype or converted to it.
+def _ensure_geometry(
+    data: Any, crs: Union[str, int, None] = None
+) -> FlowSeries:
+    """Ensure data is a FlowSeries with geometry dtype.
 
-    If input is a (Geo)Series, output is a GeoSeries, otherwise output
-    is GeometryArray.
+    Parameters
+    ----------
+    data : array-like
+        Input data to convert.
+    crs : str, int, or None, optional
+        CRS to assign if data has no CRS.
 
-    If the input is a GeometryDtype with a set CRS, `crs` is ignored.
+    Returns
+    -------
+    FlowSeries
+        Data converted to FlowSeries.
     """
     if is_geometry_type(data):
         if isinstance(data, FlowSeries):
@@ -68,30 +76,32 @@ def _ensure_geometry(data, crs=None):
 
 
 class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
-    """
-    A DataFrame subclass for handling flow data with geographic operations.
+    """A DataFrame subclass for handling flow data with geographic operations.
 
-    FlowDataFrame extends pandas DataFrame and GeoPandasBase to provide specialized
-    functionality for working with flow data that has geographic components.
-    Each row represents a flow with origin and destination geometries.
+    FlowDataFrame extends pandas DataFrame and GeoPandasBase to provide
+    specialized functionality for working with flow data (origin-destination
+    pairs). Each row represents a flow with origin and destination geometries.
 
     Parameters
     ----------
-    data : dict, list, pandas.DataFrame, optional
-        Input data containing flow information
-    geometry : str, array-like, optional
-        Column name or array containing geometry data
-    crs : pyproj.CRS, optional
-        Coordinate reference system for the geometries
-    *args, **kwargs
-        Additional arguments passed to pandas.DataFrame constructor
+    data : dict, list, FlowDataFrame, optional
+        Input data containing flow information.
+    geometry : str or array-like, optional
+        Column name or array containing Flow geometry data.
+    crs : str, int, or dict, optional
+        Coordinate reference system identifier.
+    **kwargs : dict
+        Additional arguments passed to pandas.DataFrame.
 
-    Notes
-    -----
-    - Most functionality is adapted from GeoDataFrame
-    - Direct inheritance from GeoDataFrame is avoided due to unique properties
-    - Supports all standard pandas DataFrame operations
-    - Adds geographic operations specific to flow data
+    Examples
+    --------
+    >>> from geoflowkit import Flow, FlowDataFrame
+    >>> flows = [Flow([[0, 0], [1, 1]]), Flow([[1, 2], [3, 4]])]
+    >>> fdf = FlowDataFrame({"value": [10, 20]}, geometry=flows)
+    >>> len(fdf)
+    2
+    >>> fdf.geometry[0]
+    FLOW (0 0, 1 1)
     """
     
     _metadata = ["_geometry_column_name"]
@@ -101,30 +111,29 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
 
     _geometry_column_name = None
     
-    def __init__(self, data=None, *args, geometry=None, crs=None, **kwargs):
-        """
-        Initialize a FlowDataFrame with flow data and geometries.
+    def __init__(
+        self,
+        data: Any = None,
+        *args: Any,
+        geometry: Any = None,
+        crs: Union[str, int, None] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a FlowDataFrame with flow data and geometries.
 
         Parameters
         ----------
-        data : dict, list, pandas.DataFrame, optional
-            Input data containing flow information
+        data : dict, list, FlowDataFrame, optional
+            Input data containing flow information.
         *args : tuple
-            Additional positional arguments passed to pandas.DataFrame
-        geometry : str, array-like, optional
-            Column name or array containing geometry data
-        crs : pyproj.CRS, optional
-            Coordinate reference system for the geometries
+            Additional positional arguments passed to DataFrame.
+        geometry : str or array-like, optional
+            Column name or array containing Flow geometry data.
+        crs : str, int, or dict, optional
+            Coordinate reference system identifier.
         **kwargs : dict
-            Additional keyword arguments passed to pandas.DataFrame
-
-        Notes
-        -----
-        - If geometry is not specified, looks for 'geometry' column
-        - Validates CRS consistency between input and specified CRS
-        - Handles both single geometry and flow (origin-destination) geometries
+            Additional keyword arguments passed to DataFrame.
         """
-        
         if (
             kwargs.get("copy") is None
             and isinstance(data, DataFrame)
@@ -191,14 +200,14 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
                 "or by providing a DataFrame with column name 'geometry'",
             )
         
-    def __setattr__(self, attr, val):
+    def __setattr__(self, attr: str, val: Any) -> None:
         # have to special case geometry b/c pandas tries to use as column...
         if attr == "geometry":
             object.__setattr__(self, attr, val)
         else:
             super().__setattr__(attr, val)
 
-    def _get_geometry(self):
+    def _get_geometry(self) -> FlowSeries:
         if self._geometry_column_name not in self:
             if self._geometry_column_name is None:
                 msg = (
@@ -229,7 +238,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             raise AttributeError(msg)
         return self[self._geometry_column_name]
 
-    def _set_geometry(self, col):
+    def _set_geometry(self, col: Any) -> None:
         if not pd.api.types.is_list_like(col):
             raise ValueError("Must use a list-like to set the geometry property")
         self.set_geometry(col, inplace=True)
@@ -238,7 +247,12 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         fget=_get_geometry, fset=_set_geometry, doc="Geometry data for GeoDataFrame"
     )
     
-    def set_geometry(self, col, inplace=False, crs=None):
+    def set_geometry(
+        self,
+        col: Any,
+        inplace: bool = False,
+        crs: Union[str, int, None] = None,
+    ) -> Union["FlowDataFrame", None]:
         """
         Set the GeoDataFrame geometry using either an existing column or
         the specified input. By default yields a new object.
@@ -317,7 +331,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         if not inplace:
             return frame
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> Any:
         """Override to ensure type preservation during indexing"""
         # Handle column selection
         if isinstance(key, list):
@@ -327,7 +341,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
             return result
         return super().__getitem__(key)
     
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: Any, value: Any) -> None:
         """
         Overwritten to preserve CRS of GeometryArray in cases like
         df['geometry'] = [geom... for geom in df.geometry]
@@ -349,11 +363,13 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         super().__setitem__(key, value)
 
     @property
-    def _constructor(self):
+    def _constructor(self) -> type["FlowDataFrame"]:
         """Override pandas/geopandas internal constructor"""
         return FlowDataFrame
     
-    def _constructor_from_mgr(self, mgr, axes):
+    def _constructor_from_mgr(
+        self, mgr: Any, axes: Any
+    ) -> "FlowDataFrame":
         # replicate _geodataframe_constructor_with_fallback behaviour
         # unless safe to skip
         if not any(isinstance(block.dtype, GeometryDtype) for block in mgr.blocks):
@@ -368,7 +384,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         return fdf
     
     @property
-    def _constructor_sliced(self):
+    def _constructor_sliced(self) -> Any:
         def _flowdataframe_constructor_sliced(*args, **kwargs):
             srs = pd.Series(*args, **kwargs)
             is_row_proxy = srs.index.is_(self.columns)
@@ -381,7 +397,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
 
         return _flowdataframe_constructor_sliced
     
-    def _constructor_sliced_from_mgr(self, mgr, axes):
+    def _constructor_sliced_from_mgr(self, mgr: Any, axes: Any) -> Any:
         is_row_proxy = mgr.index.is_(self.columns)
 
         if isinstance(mgr.blocks[0].dtype, GeometryDtype) and not is_row_proxy:
@@ -392,7 +408,7 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         return Series._from_mgr(mgr, axes)
             
     @GeoPandasBase.crs.setter
-    def crs(self, value):
+    def crs(self, value: Union[str, int, None]) -> None:
         """Sets the value of the crs"""
         if self._geometry_column_name is None:
             raise ValueError(
@@ -419,7 +435,13 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
                 "the active geometry column.",
             )
             
-    def set_crs(self, crs=None, epsg=None, inplace=False, allow_override=False):
+    def set_crs(
+        self,
+        crs: Union[str, int, None] = None,
+        epsg: Union[int, None] = None,
+        inplace: bool = False,
+        allow_override: bool = False,
+    ) -> "FlowDataFrame":
         """
         Set the Coordinate Reference System (CRS) of the ``GeoDataFrame``.
 
@@ -458,7 +480,14 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         )
         return df
     
-    def to_file(self, filename, driver=None, schema=None, index=None, **kwargs):
+    def to_file(
+        self,
+        filename: str,
+        driver: Union[str, None] = None,
+        schema: Union[dict, None] = None,
+        index: Union[bool, None] = None,
+        **kwargs: Any,
+    ) -> None:
         """Convert the FlowDataFrame to ``GeoDataFrame``, then write it to a file.
 
         By default, an ESRI shapefile is written, but any OGR data source
@@ -549,7 +578,12 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         gdf = gpd.GeoDataFrame(self)
         _to_file(gdf, filename, driver, schema, index, **kwargs)
 
-    def to_crs(self, crs=None, epsg=None, inplace=False):
+    def to_crs(
+        self,
+        crs: Union[str, int, None] = None,
+        epsg: Union[int, None] = None,
+        inplace: bool = False,
+    ) -> Union["FlowDataFrame", None]:
         """Transform geometries to a new coordinate reference system.
 
         Transform all geometries in an active geometry column to a different coordinate
@@ -587,7 +621,15 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         if not inplace:
             return df
 
-    def plot(self, kind='arrow', ax=None, column=None, figsize=None, zoom=0.03, **kwargs) -> plt.Axes:
+    def plot(
+        self,
+        kind: str = "arrow",
+        ax: Union[plt.Axes, None] = None,
+        column: Union[str, np.ndarray, None] = None,
+        figsize: Union[tuple, None] = None,
+        zoom: float = 0.03,
+        **kwargs: Any,
+    ) -> plt.Axes:
         """
         Plot the flow data.
 
@@ -701,7 +743,14 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         else:
             return super().plot(kind=kind, ax=ax, figsize=figsize, **kwargs)
         
-    def to_grid(self, delta_x=None, delta_y=None, x_size=None, y_size=None, inplace=False) -> 'FlowDataFrame':
+    def to_grid(
+        self,
+        delta_x: Union[float, None] = None,
+        delta_y: Union[float, None] = None,
+        x_size: Union[int, None] = None,
+        y_size: Union[int, None] = None,
+        inplace: bool = False,
+    ) -> "FlowDataFrame":
         """Divide the study area into a grid and calculate the grid of the origin and destination points of each flow.
 
         Parameters:

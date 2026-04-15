@@ -110,7 +110,7 @@ density = fdf.density  # Flows per unit area
 volume = fdf.volume    # Total bounding area
 ```
 
-### Spatial Operations
+### Flow Metrics
 
 ```python
 # Calculate pairwise distances between flows
@@ -118,11 +118,31 @@ from geoflowkit import pairwise_distances
 
 dist_matrix = pairwise_distances(fdf, distance='max')
 
+# Calculate local density of flow
+from geoflowkit import k_neighbor_distances, snn_distance
+
+k_dists = k_neighbor_distances(fdf, k=2)
+snn_dist = snn_distance(fdf, k=8)
+
+# Calculate disorder of flows
+from geoflowkit import flow_entropy, flow_divergence
+
+entropy = flow_entropy(fdf)
+div = flow_divergence(fdf, n_directions=6)
+```
+
+### Spatial Operations
+
+```python
 # Clip flows within a polygon
 clipped = fdf.clip(polygon_mask)
 
 # Select flows within bounds
 within_bounds = fdf.within(bounds_box)
+
+# Calculate the distance with others
+dist_series = fdf.distance(flow)
+dist_series = fdf.distance(other_fdf)
 ```
 
 ### Spatial Clustering Scale Detection (K/L Functions)
@@ -244,6 +264,14 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `kmedoid(fdf, n_clusters=5, ...)`: K-medoid clustering for flows
 - `dbscan(fdf, eps=0.5, min_samples=5, ...)`: DBSCAN clustering for flows
 - `i_index(fdf, zones, alpha=None, od_type='d', ...)`: I-index for location irreplaceability
+- `second_order_density(fdf, ...)`: Second-order density of flows
+- `FlowSeries / FlowDataFrame methods`:
+  - `within(mask)`: Select flows whose origin and destination are both inside mask
+  - `clip(mask)`: Clip flows to a mask polygon
+  - `distance(other, distance='max', ...)`: Calculate distance to another flow or FlowSeries
+  - `to_grid(delta_x=None, delta_y=None, ...)`: Divide study area into grid and aggregate flows *(FlowDataFrame only)*
+  - `to_crs(crs)`: Transform CRS of flows
+  - `set_crs(crs, allow_override=False)`: Set CRS without transforming geometries
 
 ## License
 

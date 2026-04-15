@@ -60,20 +60,106 @@ class TestFlowSeries(unittest.TestCase):
         fs = FlowSeries([self.flow1, self.flow2], crs="EPSG:4326")
         self.assertEqual(fs.crs, "EPSG:4326")
 
-        # Test CRS mismatch
+        # Replacing CRS without allow_override raises ValueError
         with self.assertRaises(ValueError):
-            FlowSeries([self.flow1, self.flow2], crs="EPSG:4326").set_crs("EPSG:3857")
+            fs.set_crs("EPSG:3857")
 
+        # to_crs transforms geometries correctly
         self.assertIsInstance(fs.to_crs("EPSG:3857"), FlowSeries)
+        # set_crs with allow_override works
         self.assertIsInstance(fs.set_crs("EPSG:3857", allow_override=True), FlowSeries)
-        self.assertNotEqual(fs.crs, None)
-        self.assertNotEqual(fs.to_crs("EPSG:3857").crs, None)
-        self.assertNotEqual(fs.set_crs("EPSG:3857", allow_override=True).crs, None)
 
     def test_od(self):
         """Test origin and destination properties"""
         self.assertIsInstance(self.fs1.o, gpd.GeoSeries)
         self.assertIsInstance(self.fs1.d, gpd.GeoSeries)
+
+    def test_length(self):
+        """Test length (distance) property"""
+        lengths = self.fs1.length
+        self.assertEqual(len(lengths), 2)
+        self.assertTrue(all(lengths > 0))
+
+    def test_angle(self):
+        """Test angle property"""
+        import warnings
+        fs = FlowSeries([Flow([[0, 0], [1, 0]]), Flow([[0, 0], [0, 1]])], crs="EPSG:32618")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            angles = fs.angle
+        self.assertEqual(len(angles), 2)
+
+    def test_within(self):
+        """Test within method"""
+        from shapely.geometry import box
+        mask = box(-1, -1, 3, 3)
+        result = self.fs1.within(mask)
+        self.assertEqual(len(result), 2)
+        self.assertTrue(result.all())
+
+        # Partial within
+        partial_fs = FlowSeries(
+            [Flow([[0, 0], [10, 10]]), Flow([[0, 0], [1, 1]])],
+            crs="EPSG:4326"
+        )
+        result = partial_fs.within(mask)
+        self.assertFalse(result.iloc[0])
+        self.assertTrue(result.iloc[1])
+
+    def test_clip(self):
+        """Test clip method"""
+        from shapely.geometry import box
+        mask = box(-1, -1, 3, 3)
+        clipped = self.fs1.clip(mask)
+        self.assertEqual(len(clipped), 2)
+        self.assertIsInstance(clipped, FlowSeries)
+
+    def test_distance(self):
+        """Test distance method between two FlowSeries"""
+        result = self.fs1.distance(self.fs2, distance="max")
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(result >= 0))
+
+        result_sum = self.fs1.distance(self.fs2, distance="sum")
+        self.assertEqual(len(result_sum), 2)
+
+        result_min = self.fs1.distance(self.fs2, distance="min")
+        self.assertEqual(len(result_min), 2)
+
+        result_mean = self.fs1.distance(self.fs2, distance="mean")
+        self.assertEqual(len(result_mean), 2)
+
+        result_weighted = self.fs1.distance(self.fs2, distance="weighted", w1=1, w2=2)
+        self.assertEqual(len(result_weighted), 2)
+
+        # Single Flow
+        result_single = self.fs1.distance(self.flow1, distance="max")
+        self.assertEqual(len(result_single), 2)
+
+        # Invalid distance method
+        with self.assertRaises(ValueError):
+            self.fs1.distance(self.fs2, distance="invalid")
+
+    def test_to_crs(self):
+        """Test CRS transformation"""
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[1, 2], [3, 4]])], crs="EPSG:4326")
+        reprojected = fs.to_crs("EPSG:32618")
+        self.assertIsInstance(reprojected, FlowSeries)
+        self.assertNotEqual(reprojected.crs, fs.crs)
+
+    def test_set_crs(self):
+        """Test set_crs method"""
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[1, 2], [3, 4]])], crs="EPSG:4326")
+        fs2 = fs.set_crs("EPSG:32618", allow_override=True)
+        self.assertEqual(fs2.crs, "EPSG:32618")
+
+    def test_plot(self):
+        """Test plot method runs without error"""
+        import matplotlib
+        matplotlib.use("Agg")
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[1, 2], [3, 4]])], crs="EPSG:4326")
+        ax = fs.plot()
+        self.assertIsNotNone(ax)
 
     def test_geometry_access(self):
         """Test geometry access"""
