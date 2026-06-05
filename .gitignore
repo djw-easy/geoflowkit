@@ -8,3 +8,4 @@ geoflowkit.egg-info/
 
 .claude/
 .worktrees/
+.codegraph/

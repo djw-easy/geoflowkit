@@ -151,10 +151,13 @@ def pairwise_distances(fdf: FlowDataFrame, distance='max', metric='euclidean',
         if is_geographic:
             warnings.warn("Weighted distances with haversine may be inaccurate.")
         if not length:
-            return np.sqrt(w1 * o_dis ** 2 + w2 * d_dis ** 2)
+            return squareform(np.sqrt(w1 * o_dis ** 2 + w2 * d_dis ** 2))
         else:
-            length = fdf.length.values.reshape(-1, 1)
-            return np.sqrt(w1 * o_dis ** 2 + w2 * d_dis ** 2 / (length @ length.T))
+            lengths = fdf.length.values
+            denominator = np.sqrt(np.outer(lengths, lengths))
+            o_full = squareform(o_dis)
+            d_full = squareform(d_dis)
+            return np.sqrt(w1 * o_full ** 2 + w2 * d_full ** 2 / denominator)
     else:
         raise ValueError("distance must be 'max', 'sum', 'min', 'mean', or 'weighted'")
 

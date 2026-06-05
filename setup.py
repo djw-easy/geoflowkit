@@ -12,7 +12,8 @@ setup(
         "matplotlib",
         "scikit-learn",
         "tqdm",
-        "numba"
+        "numba",
+        "networkx>=2.6",
     ],
     author="GeoFlow Developer",
     author_email="djw@lreis.ac.cn",
@@ -26,5 +27,5 @@ setup(
         "Operating System :: OS Independent",
     ],
     license="MIT",
-    python_requires='>=3.7',
+    python_requires='>=3.9',
 )

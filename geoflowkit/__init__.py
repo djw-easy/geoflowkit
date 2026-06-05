@@ -13,7 +13,10 @@ from geoflowkit.spatial.kl_function import k_func, l_func, local_l_func
 
 from geoflowkit.clustering import (
     KMedoidFlow, kmedoid, 
-    DBSCANFlow, dbscan
+    DBSCANFlow, dbscan,
+    CNMFlow, cnm,
+    LouvainFlow, louvain,
+    STOCSFlow, stocs,
 )
 
 from geoflowkit.manifold import FTSNE

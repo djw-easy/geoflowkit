@@ -113,6 +113,67 @@ class TestReadCSV(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_csv(self.csv_path, use_cols=["a", "b"])
 
+    def test_with_crs(self):
+        """Test reading CSV with CRS parameter"""
+        df = pd.DataFrame({
+            "o_x": [0.0, 1.0],
+            "o_y": [0.0, 2.0],
+            "d_x": [1.0, 3.0],
+            "d_y": [1.0, 4.0],
+        })
+        df.to_csv(self.csv_path, index=False)
+        result = read_csv(self.csv_path, use_cols=["o_x", "o_y", "d_x", "d_y"], crs="EPSG:4326")
+        self.assertEqual(result.crs, "EPSG:4326")
+
+    def test_with_extra_columns(self):
+        """Test reading CSV with extra columns"""
+        df = pd.DataFrame({
+            "o_x": [0.0, 1.0],
+            "o_y": [0.0, 2.0],
+            "d_x": [1.0, 3.0],
+            "d_y": [1.0, 4.0],
+            "value": [10, 20],
+            "name": ["a", "b"],
+        })
+        df.to_csv(self.csv_path, index=False)
+        result = read_csv(self.csv_path, use_cols=["o_x", "o_y", "d_x", "d_y"])
+        self.assertEqual(len(result), 2)
+
+    def test_single_row(self):
+        """Test reading CSV with single row"""
+        df = pd.DataFrame({
+            "o_x": [0.0],
+            "o_y": [0.0],
+            "d_x": [1.0],
+            "d_y": [1.0],
+        })
+        df.to_csv(self.csv_path, index=False)
+        result = read_csv(self.csv_path, use_cols=["o_x", "o_y", "d_x", "d_y"])
+        self.assertEqual(len(result), 1)
+
+
+class TestFlowsFromODExtra(unittest.TestCase):
+    def test_3d_coordinates(self):
+        """Test with 3D coordinates"""
+        o = np.array([[0, 0, 10], [1, 2, 20]])
+        d = np.array([[1, 1, 30], [3, 4, 40]])
+        fs = flows_from_od(o, d)
+        self.assertEqual(len(fs), 2)
+
+    def test_single_flow(self):
+        """Test creating a single flow"""
+        o = np.array([[0, 0]])
+        d = np.array([[1, 1]])
+        fs = flows_from_od(o, d)
+        self.assertEqual(len(fs), 1)
+
+
+class TestFlowsFromGeometryExtra(unittest.TestCase):
+    def test_empty_list(self):
+        """Test with empty list"""
+        fs = flows_from_geometry([])
+        self.assertEqual(len(fs), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

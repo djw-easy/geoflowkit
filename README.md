@@ -30,6 +30,7 @@ pip install .
 - scikit-learn
 - tqdm
 - numba
+- networkx >= 2.6
 
 ## Quick Start
 
@@ -191,6 +192,49 @@ from geoflowkit import dbscan
 labels = dbscan(fdf, eps=0.5, min_samples=5)
 ```
 
+### Community Detection
+
+Community detection algorithms identify groups of closely connected zones in flow networks. These algorithms first build a flow network graph from the FlowDataFrame, then detect communities using modularity optimization.
+
+```python
+# CNM (Clauset-Newman-Moore) algorithm
+from geoflowkit import cnm
+
+labels = cnm(fdf, zone_method='grid', cell_size=1000)
+
+# Louvain algorithm
+from geoflowkit import louvain
+
+labels = louvain(fdf, zone_method='grid', cell_size=1000, seed=42)
+
+# STOCS (Spatial Tabu Optimization for Community Structure)
+from geoflowkit import stocs
+
+labels = stocs(
+    fdf, zone_method='grid', cell_size=1000,
+    spatial_weight=0.5, tabu_tenure=15
+)
+```
+
+**Zone methods**: `'grid'` (regular grid), `'aggregate'` (unique OD pairs), `'gdf'` (external GeoDataFrame), `'custom'` (user function).
+
+```python
+# Custom zone function example
+import numpy as np
+
+def my_zones(fdf):
+    origins = np.array([[p.x, p.y] for p in fdf.o])
+    destinations = np.array([[p.x, p.y] for p in fdf.d])
+    o_zones = (origins[:, 0] > 0).astype(int) * 2 + (origins[:, 1] > 0).astype(int)
+    d_zones = (destinations[:, 0] > 0).astype(int) * 2 + (destinations[:, 1] > 0).astype(int)
+    zone_centroids = {i: (origins[o_zones == i].mean(axis=0)) for i in range(4) if (o_zones == i).any()}
+    return o_zones.astype(int), d_zones.astype(int), zone_centroids
+
+labels = louvain(fdf, zone_method='custom', zone_func=my_zones)
+```
+
+**Output**: Flow-level labels where `-1` indicates cross-community flows (origin and destination belong to different communities).
+
 ### Manifold Learning (FTSNE)
 
 ```python
@@ -199,14 +243,12 @@ from geoflowkit import FTSNE
 # Global interpretability (separate O and D)
 transformer = FTSNE(perplexity=200, learning_rate='auto')
 X_embedded = transformer.fit_transform(
-    fdf,
-    identity={'o': 0, 'd': 1}
+    fdf, identity={'o': 0, 'd': 1}
 )
 
 # Local interpretability (union O and D)
 X_embedded = transformer.fit_transform(
-    fdf,
-    union={('o', 'd'): (0, 1)}
+    fdf, union={('o', 'd'): (0, 1)}
 )
 ```
 
@@ -234,7 +276,7 @@ result = i_index(fdf, zones, alpha=1000.0)
 Jupyter notebook examples are available in the `examples/` folder:
 
 - [basic_usage.ipynb](examples/basic_usage.ipynb) - Basic usage of Flow, FlowSeries, and FlowDataFrame
-- [clustering.ipynb](examples/clustering.ipynb) - K-medoid and DBSCAN clustering for flow data
+- [clustering.ipynb](examples/clustering.ipynb) - Flow clustering and community detection
 - [kl_function.ipynb](examples/kl_function.ipynb) - K/L functions for spatial clustering detection
 - [ft_sne.ipynb](examples/ft_sne.ipynb) - FTSNE manifold learning for flow data
 - [centrality.ipynb](examples/centrality.ipynb) - I-index for location irreplaceability
@@ -248,6 +290,9 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `FlowDataFrame`: pandas DataFrame subclass with Flow geometry column
 - `KMedoidFlow`: K-medoid clustering for flow data
 - `DBSCANFlow`: DBSCAN clustering for flow data
+- `CNMFlow`: Clauset-Newman-Moore community detection
+- `LouvainFlow`: Louvain community detection
+- `STOCSFlow`: Spatial Tabu Optimization for Community Structure
 - `FTSNE`: A Variant of t-SNE for Flow Data
 
 ### Key Functions
@@ -266,6 +311,9 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `local_l_func(fdf, r, distance='max', ...)`: Local L function for individual flows
 - `kmedoid(fdf, n_clusters=5, ...)`: K-medoid clustering for flows
 - `dbscan(fdf, eps=0.5, min_samples=5, ...)`: DBSCAN clustering for flows
+- `cnm(fdf, zone_method='grid', cell_size=..., ...)`: CNM community detection
+- `louvain(fdf, zone_method='grid', cell_size=..., seed=..., ...)`: Louvain community detection
+- `stocs(fdf, zone_method='grid', cell_size=..., spatial_weight=0.5, ...)`: STOCS community detection
 - `i_index(fdf, zones, alpha=None, od_type='d', ...)`: I-index for location irreplaceability
 - `second_order_density(fdf, ...)`: Second-order density of flows
 - `FlowSeries / FlowDataFrame methods`:

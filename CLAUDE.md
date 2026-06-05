@@ -63,9 +63,11 @@ geoflowkit/
 │   ├── utils.py         # nth_largest, second_order_density
 │   ├── kl_function.py   # k_func, l_func, local_l_func
 │   └── centrality.py    # i_index
-├── clustering/          # Flow clustering
+├── clustering/          # Flow clustering and community detection
 │   ├── kmedoid.py       # KMedoidFlow, kmedoid()
-│   └── dbscan.py        # DBSCANFlow, dbscan()
+│   ├── dbscan.py        # DBSCANFlow, dbscan()
+│   ├── community.py     # CNMFlow, LouvainFlow, STOCSFlow + convenience functions
+│   └── _graph_utils.py  # flows_to_graph(), assign_flow_labels(), zone assignment utilities
 ├── manifold/            # FTSNE for dimensionality reduction
 │   └── ftsne/
 │       ├── ftsne.py     # Main FTSNE class
@@ -96,9 +98,19 @@ geoflowkit/
 - `flow_entropy(fdf, cell_area=None)` calculates flow space entropy
 - `flow_divergence(fdf, n_directions=6)` calculates flow directional entropy
 
+### Community Detection
+- Builds a flow network graph from FlowDataFrame using zone assignment methods
+- Zone methods: 'grid' (regular grid), 'aggregate' (unique OD pairs), 'gdf' (external GeoDataFrame), 'custom' (user function)
+- `cnm(fdf, zone_method='grid', cell_size=...)` - Clauset-Newman-Moore greedy modularity optimization
+- `louvain(fdf, zone_method='grid', cell_size=..., seed=...)` - Louvain fast unfolding algorithm (reproducible with seed)
+- `stocs(fdf, zone_method='grid', cell_size=..., spatial_weight=0.5, ...)` - Spatial tabu optimization with spatial proximity constraints
+- Output: flow-level labels where -1 indicates cross-community flows
+- Custom zone function signature: `zone_func(fdf) -> (o_zones, d_zones, zone_centroids)`
+
 ## Notable Implementation Details
 
 - FTSNE uses sklearn's parameter validation via `@validate_params` decorator
 - Clustering algorithms (kmedoid, dbscan) use flow-specific distance metrics
+- Community detection algorithms (CNM, Louvain, STOCS) convert FlowDataFrame to a networkx graph via `flows_to_graph()`, then detect communities on the graph; flow-level labels are derived from zone-level community assignments (-1 for cross-community flows)
 - The `within()` method checks both origin AND destination points against a mask
 - FlowSeries.plot() and FlowDataFrame.plot(kind='arrow') render flows as arrows using matplotlib quiver and support a zoom parameter to control the view extent; FlowDataFrame.plot() additionally supports categorical columns for multi-color plotting

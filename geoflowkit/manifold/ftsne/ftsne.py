@@ -202,7 +202,7 @@ class FTSNE:
         ],
         "max_iter": [Interval(Integral, 10, None, closed="left"), None],
         "early_exaggeration": [Interval(Real, 1, None, closed="left")],
-        "early_exaggeration_iter": [Interval(Integral, 0, None, closed="left"), None],
+        "early_exaggeration_iter": [StrOptions({"auto"}), Interval(Integral, 0, None, closed="left"), None],
         "init": [
             StrOptions({"pca", "random"}),
             np.ndarray,
@@ -466,9 +466,35 @@ class FTSNE:
         >>> values = ft._get_values(fdf, 'length')  # Get flow lengths
         >>> values = ft._get_values(fdf, ('o', 'd'))  # Get both origin and destination
         """
-        
+        import shapely
+
+        if isinstance(attr, tuple):
+            parts = [self._get_values(fdf, a) for a in attr]
+            return np.concatenate(parts, axis=1)
+
+        if isinstance(fdf, dict):
+            if attr not in fdf:
+                raise ValueError(f"Invalid attribute: {attr}")
+            return np.asarray(fdf[attr])
+
+        if attr == 'o':
+            return shapely.get_coordinates(fdf.o)
+        elif attr == 'd':
+            return shapely.get_coordinates(fdf.d)
+        elif attr == 'length':
+            return fdf.length.values.reshape(-1, 1)
+        elif attr == 'angle':
+            return fdf.angle.values.reshape(-1, 1)
+        elif attr in fdf.columns:
+            col = fdf[attr]
+            if hasattr(col, 'values'):
+                return col.values.reshape(-1, 1) if col.ndim == 1 else col.values
+            return np.asarray(col).reshape(-1, 1)
+        else:
+            raise ValueError(f"Invalid attribute: {attr}")
+
     def _initialize_embedding(self, fdf: Union[FlowDataFrame, dict], identity: dict,
-                            intersection: dict, union: dict, n_components: int):
+                             intersection: dict, union: dict, n_components: int):
         """Initialize the embedding matrix.
 
         Creates an initial low-dimensional embedding for the optimization process.

@@ -111,3 +111,68 @@ class TestFlowDivergence:
         fdf = FlowDataFrame({'geometry': fs}, crs="EPSG:3857")
         result = flow_divergence(fdf, n_directions=4)
         assert abs(result) < 1e-9  # Should be ~0
+
+
+class TestPairwiseDistancesExtra:
+    def test_weighted_distance_no_length(self, sample_fdf):
+        result = pairwise_distances(sample_fdf, distance='weighted', length=False)
+        assert result.shape == (5, 5)
+        assert np.all(result >= 0)
+        assert np.allclose(np.diag(result), 0.0)
+        assert np.allclose(result, result.T)
+
+    def test_weighted_distance_with_length(self, sample_fdf):
+        result = pairwise_distances(sample_fdf, distance='weighted', length=True)
+        assert result.shape == (5, 5)
+        assert np.all(result >= 0)
+        assert np.allclose(np.diag(result), 0.0)
+        assert np.allclose(result, result.T)
+
+    def test_weighted_with_weights(self, sample_fdf):
+        result = pairwise_distances(sample_fdf, distance='weighted', w1=1, w2=2, length=False)
+        assert result.shape == (5, 5)
+        assert np.all(result >= 0)
+
+    def test_mean_distance(self, sample_fdf):
+        result = pairwise_distances(sample_fdf, distance='mean')
+        assert result.shape == (5, 5)
+        assert np.all(result >= 0)
+
+    def test_single_flow(self):
+        o = np.array([[0, 0]])
+        d = np.array([[1, 1]])
+        fs = flows_from_od(o, d, crs="EPSG:3857")
+        fdf = FlowDataFrame({'geometry': fs}, crs="EPSG:3857")
+        result = pairwise_distances(fdf)
+        assert result.shape == (1, 1)
+        assert result[0, 0] == 0.0
+
+    def test_diagonal_zero(self, sample_fdf):
+        result = pairwise_distances(sample_fdf)
+        assert np.allclose(np.diag(result), 0.0)
+
+    def test_symmetric(self, sample_fdf):
+        result = pairwise_distances(sample_fdf)
+        assert np.allclose(result, result.T)
+
+
+class TestKNeighborDistancesExtra:
+    def test_k1_non_negative(self, sample_fdf):
+        result = k_neighbor_distances(sample_fdf, k=1)
+        assert np.all(result >= 0)
+
+    def test_k_equals_n_minus_1(self, sample_fdf):
+        result = k_neighbor_distances(sample_fdf, k=4)
+        assert result.shape == (5,)
+        assert np.all(result >= 0)
+
+
+class TestSNNDistanceExtra:
+    def test_snn_diagonal_zero(self, sample_fdf):
+        result = snn_distance(sample_fdf, k=4)
+        assert np.allclose(np.diag(result), 0.0)
+
+    def test_snn_range(self, sample_fdf):
+        result = snn_distance(sample_fdf, k=2)
+        assert np.all(result >= 0)
+        assert np.all(result <= 1)

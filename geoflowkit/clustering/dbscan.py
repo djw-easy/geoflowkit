@@ -105,6 +105,12 @@ class DBSCANFlow:
     core_sample_indices_ : np.ndarray
         Indices of core samples.
 
+    References
+    ----------
+    [1] Pei T, Wang W, Zhang H, et al. (2015). 
+        Density-based clustering for data containing two types of points. 
+        International Journal of Geographical Information Science, 29(2): 175-193.
+
     Examples
     --------
     >>> from geoflowkit import read_file

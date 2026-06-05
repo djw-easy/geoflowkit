@@ -95,7 +95,7 @@ def i_index(fdf: FlowDataFrame, zones: gpd.GeoDataFrame,
     [1] Wang, X., Chen, J., Pei, T.*, Song, C., Liu, Y., Shu, H., … Chen, X. (2021). 
         I-index for quantifying an urban location’s irreplaceability. 
         Computers, Environment and Urban Systems, 90, Article 101711.
-    [2] Original implementation: https://github.com/Lreis-GeoFlow-Lab/Flow_I_index
+    [2] Original implementation: https://github.com/XiWang714/Flow_I_index
 
     Examples
     --------

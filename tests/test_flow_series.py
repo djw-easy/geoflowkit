@@ -219,6 +219,83 @@ class TestFlowSeries(unittest.TestCase):
         """Test geometry access"""
         self.assertIsInstance(self.fs1.geometry, FlowSeries)
 
+    def test_density(self):
+        """Test density property"""
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[1, 1], [2, 2]])], crs="EPSG:3857")
+        self.assertIsInstance(fs.density, float)
+        self.assertGreater(fs.density, 0)
+
+    def test_volume(self):
+        """Test volume property"""
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[1, 1], [2, 2]])], crs="EPSG:3857")
+        self.assertIsInstance(fs.volume, float)
+        self.assertGreater(fs.volume, 0)
+
+    def test_empty_flowseries(self):
+        """Test empty FlowSeries"""
+        fs = FlowSeries([], crs="EPSG:4326")
+        self.assertEqual(len(fs), 0)
+        self.assertTrue(fs.empty)
+
+    def test_copy(self):
+        """Test copy method"""
+        fs_copy = self.fs1.copy()
+        self.assertIsInstance(fs_copy, FlowSeries)
+        self.assertEqual(len(fs_copy), len(self.fs1))
+
+    def test_head_tail(self):
+        """Test head and tail preserve type"""
+        head = self.fs1.head(1)
+        self.assertIsInstance(head, FlowSeries)
+        tail = self.fs1.tail(1)
+        self.assertIsInstance(tail, FlowSeries)
+
+    def test_iloc_preserves_type(self):
+        """Test iloc preserves FlowSeries type"""
+        subset = self.fs1.iloc[:1]
+        self.assertIsInstance(subset, FlowSeries)
+
+    def test_loc_preserves_type(self):
+        """Test loc preserves FlowSeries type"""
+        subset = self.fs1.loc[0:0]
+        self.assertIsInstance(subset, FlowSeries)
+
+    def test_bounds(self):
+        """Test bounds property"""
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[2, 2], [3, 3]])], crs="EPSG:3857")
+        bounds = fs.bounds
+        self.assertIsInstance(bounds, pd.DataFrame)
+        self.assertEqual(len(bounds), 2)
+
+    def test_total_bounds(self):
+        """Test total_bounds property"""
+        fs = FlowSeries([Flow([[0, 0], [1, 1]]), Flow([[2, 2], [3, 3]])], crs="EPSG:3857")
+        tb = fs.total_bounds
+        self.assertEqual(len(tb), 4)
+
+    def test_drop_preserves_type(self):
+        """Test drop preserves FlowSeries type"""
+        fs = FlowSeries([self.flow1, self.flow2, self.flow3], crs="EPSG:4326")
+        dropped = fs.drop(0)
+        self.assertIsInstance(dropped, FlowSeries)
+        self.assertEqual(len(dropped), 2)
+
+    def test_set_crs_without_existing(self):
+        """Test set_crs on FlowSeries without existing CRS"""
+        fs = FlowSeries([self.flow1], crs=None)
+        fs2 = fs.set_crs("EPSG:4326")
+        self.assertEqual(fs2.crs, "EPSG:4326")
+
+    def test_crs_warning_on_geographic(self):
+        """Test that geographic CRS produces warnings for angle"""
+        import warnings
+        fs = FlowSeries([self.flow1], crs="EPSG:4326")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _ = fs.angle
+            geographic_warnings = [x for x in w if 'geographic' in str(x.message).lower()]
+            self.assertGreater(len(geographic_warnings), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

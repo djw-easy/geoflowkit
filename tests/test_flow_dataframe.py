@@ -187,6 +187,118 @@ class TestFlowDataFrame(unittest.TestCase):
         self.assertTrue(os.path.exists(temp_path))
         os.unlink(temp_path)
 
+    def test_density(self):
+        """Test density property"""
+        df = FlowDataFrame(self.data, crs="EPSG:3857")
+        self.assertIsInstance(df.density, float)
+        self.assertGreater(df.density, 0)
+
+    def test_volume(self):
+        """Test volume property"""
+        df = FlowDataFrame(self.data, crs="EPSG:3857")
+        self.assertIsInstance(df.volume, float)
+        self.assertGreater(df.volume, 0)
+
+    def test_length_property(self):
+        """Test length property via FlowBase mixin"""
+        df = FlowDataFrame(self.data, crs="EPSG:3857")
+        lengths = df.length
+        self.assertEqual(len(lengths), 3)
+        self.assertTrue(all(lengths > 0))
+
+    def test_angle_property(self):
+        """Test angle property via FlowBase mixin"""
+        import warnings
+        df = FlowDataFrame(self.data, crs="EPSG:3857")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            angles = df.angle
+        self.assertEqual(len(angles), 3)
+
+    def test_within(self):
+        """Test within method"""
+        from shapely.geometry import box
+        df = FlowDataFrame(self.data, crs="EPSG:3857")
+        mask = box(-10, -10, 10, 10)
+        result = df.within(mask)
+        self.assertEqual(len(result), 3)
+        self.assertTrue(result.all())
+
+    def test_clip(self):
+        """Test clip method"""
+        from shapely.geometry import box
+        df = FlowDataFrame(self.data, crs="EPSG:3857")
+        mask = box(-10, -10, 10, 10)
+        clipped = df.clip(mask)
+        self.assertIsInstance(clipped, FlowDataFrame)
+        self.assertIsInstance(clipped.geometry, FlowSeries)
+        self.assertEqual(len(clipped), 3)
+
+    def test_empty_flowdataframe(self):
+        """Test empty FlowDataFrame"""
+        empty = FlowDataFrame(
+            {'value': []},
+            geometry=FlowSeries([]),
+            crs="EPSG:4326"
+        )
+        self.assertEqual(len(empty), 0)
+        self.assertIsInstance(empty, FlowDataFrame)
+
+    def test_head_type_preservation(self):
+        """Test head preserves FlowDataFrame type"""
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        head = df.head(2)
+        self.assertIsInstance(head, FlowDataFrame)
+        self.assertIsInstance(head.geometry, FlowSeries)
+
+    def test_tail_type_preservation(self):
+        """Test tail preserves FlowDataFrame type"""
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        tail = df.tail(2)
+        self.assertIsInstance(tail, FlowDataFrame)
+        self.assertIsInstance(tail.geometry, FlowSeries)
+
+    def test_iloc_type_preservation(self):
+        """Test iloc preserves FlowDataFrame type"""
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        subset = df.iloc[:2]
+        self.assertIsInstance(subset, FlowDataFrame)
+        self.assertIsInstance(subset.geometry, FlowSeries)
+
+    def test_loc_type_preservation(self):
+        """Test loc preserves FlowDataFrame type"""
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        subset = df.loc[[0, 1]]
+        self.assertIsInstance(subset, FlowDataFrame)
+        self.assertIsInstance(subset.geometry, FlowSeries)
+
+    def test_sort_values_type_preservation(self):
+        """Test sort_values preserves FlowDataFrame type"""
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        sorted_df = df.sort_values('value')
+        self.assertIsInstance(sorted_df, FlowDataFrame)
+        self.assertIsInstance(sorted_df.geometry, FlowSeries)
+
+    def test_drop_type_preservation(self):
+        """Test drop preserves FlowDataFrame type"""
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        dropped = df.drop(columns=['id'])
+        self.assertIsInstance(dropped, FlowDataFrame)
+        self.assertIsInstance(dropped.geometry, FlowSeries)
+
+    def test_bounds(self):
+        """Test bounds property"""
+        df = FlowDataFrame(self.data, crs="EPSG:3857")
+        bounds = df.bounds
+        self.assertIsInstance(bounds, pd.DataFrame)
+        self.assertEqual(len(bounds), 3)
+
+    def test_total_bounds(self):
+        """Test total_bounds property"""
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        tb = df.total_bounds
+        self.assertEqual(len(tb), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

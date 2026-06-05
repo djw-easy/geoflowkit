@@ -39,8 +39,13 @@ def nth_largest(
     kth = -n  # Index of the Nth largest number
     partitioned = np.partition(arr, kth=kth, axis=axis)
     
+    # Build index shape: all 1s except along target axis
+    idx_shape = tuple(1 if i == axis else d for i, d in enumerate(arr.shape))
+    idx_shape = tuple(s if s > 0 else 1 for s in idx_shape)
+    indices = np.full(idx_shape, kth, dtype=int)
+    
     # Extract the Nth largest number
-    result = np.take_along_axis(partitioned, np.array([kth]), axis=axis)
+    result = np.take_along_axis(partitioned, indices, axis=axis)
     return np.squeeze(result, axis=axis)
 
 
@@ -96,8 +101,7 @@ def _second_order_density(
         else:
             volume = (np.square(np.pi) * np.sum(nth_largest(dis_matrix, k, axis=1)**4))
     else:
-        # TODO
-        NotImplementedError("The second-order density is only implemented for max distance.")
+        raise NotImplementedError("The second-order density is only implemented for max distance.")
     
     return available_flow_num / volume
 

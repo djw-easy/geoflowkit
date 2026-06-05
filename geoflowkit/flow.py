@@ -1,4 +1,5 @@
 import shapely
+import numpy as np
 from shapely.geometry import point
 from shapely.errors import EmptyPartError
 from shapely.geometry.base import BaseMultipartGeometry
@@ -75,8 +76,8 @@ class Flow(BaseMultipartGeometry):
         elif hasattr(od_points, 'coords'):
             # Convert from shapely geometry
             od_points = list(od_points.coords)
-        elif hasattr(od_points, '__iter__') and not hasattr(od_points[0], '__len__'):
-            # Could be a single coordinate pair, not valid for Flow
+        elif hasattr(od_points, '__iter__') and isinstance(od_points[0], (int, float, np.integer, np.floating)):
+            # Single coordinate pair like [0, 0] is not valid for Flow
             raise ValueError("A Flow must have exactly two points")
 
         m = len(od_points)
