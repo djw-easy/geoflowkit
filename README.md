@@ -190,6 +190,17 @@ labels = kmedoid(fdf, n_clusters=5)
 from geoflowkit import dbscan
 
 labels = dbscan(fdf, eps=0.5, min_samples=5)
+
+# K-Means clustering (virtual flow centers)
+from geoflowkit import kmeans
+
+labels = kmeans(fdf, n_clusters=5, distance='max', random_state=42)
+
+# Or use the class API to inspect cluster centers
+from geoflowkit import KMeansFlow
+
+km = KMeansFlow(n_clusters=5, distance='max', random_state=42).fit(fdf)
+print(km.cluster_centers_)  # FlowSeries of virtual flow centers
 ```
 
 ### Community Detection
@@ -290,6 +301,7 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `FlowDataFrame`: pandas DataFrame subclass with Flow geometry column
 - `KMedoidFlow`: K-medoid clustering for flow data
 - `DBSCANFlow`: DBSCAN clustering for flow data
+- `KMeansFlow`: K-Means clustering for flow data (virtual flow centers)
 - `CNMFlow`: Clauset-Newman-Moore community detection
 - `LouvainFlow`: Louvain community detection
 - `STOCSFlow`: Spatial Tabu Optimization for Community Structure
@@ -311,6 +323,7 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `local_l_func(fdf, r, distance='max', ...)`: Local L function for individual flows
 - `kmedoid(fdf, n_clusters=5, ...)`: K-medoid clustering for flows
 - `dbscan(fdf, eps=0.5, min_samples=5, ...)`: DBSCAN clustering for flows
+- `kmeans(fdf, n_clusters=8, distance='max', ...)`: K-Means clustering for flows (virtual flow centers)
 - `cnm(fdf, zone_method='grid', cell_size=..., ...)`: CNM community detection
 - `louvain(fdf, zone_method='grid', cell_size=..., seed=..., ...)`: Louvain community detection
 - `stocs(fdf, zone_method='grid', cell_size=..., spatial_weight=0.5, ...)`: STOCS community detection

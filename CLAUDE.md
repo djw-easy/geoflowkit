@@ -66,6 +66,7 @@ geoflowkit/
 ├── clustering/          # Flow clustering and community detection
 │   ├── kmedoid.py       # KMedoidFlow, kmedoid()
 │   ├── dbscan.py        # DBSCANFlow, dbscan()
+│   ├── kmeans.py        # KMeansFlow, kmeans()
 │   ├── community.py     # CNMFlow, LouvainFlow, STOCSFlow + convenience functions
 │   └── _graph_utils.py  # flows_to_graph(), assign_flow_labels(), zone assignment utilities
 ├── manifold/            # FTSNE for dimensionality reduction
@@ -110,7 +111,8 @@ geoflowkit/
 ## Notable Implementation Details
 
 - FTSNE uses sklearn's parameter validation via `@validate_params` decorator
-- Clustering algorithms (kmedoid, dbscan) use flow-specific distance metrics
+- Clustering algorithms (kmedoid, dbscan, kmeans) use flow-specific distance metrics
+- KMeansFlow implements K-Means with flow-specific distance for assignment; cluster centers are virtual flows (4D means of assigned flows, converted to Flow objects), not actual data points
 - Community detection algorithms (CNM, Louvain, STOCS) convert FlowDataFrame to a networkx graph via `flows_to_graph()`, then detect communities on the graph; flow-level labels are derived from zone-level community assignments (-1 for cross-community flows)
 - The `within()` method checks both origin AND destination points against a mask
 - FlowSeries.plot() and FlowDataFrame.plot(kind='arrow') render flows as arrows using matplotlib quiver and support a zoom parameter to control the view extent; FlowDataFrame.plot() additionally supports categorical columns for multi-color plotting
