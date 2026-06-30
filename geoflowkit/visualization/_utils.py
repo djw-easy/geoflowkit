@@ -119,9 +119,9 @@ def _build_od_matrix(fdf, o_zones, d_zones, weight='count'):
     weight : str, default='count'
         Aggregation weight:
         - ``'count'``: Count of flows between zones
-        - ``'volume'``: Sum of the ``'volume'`` column (falls back to count
-          if absent)
         - ``'length'``: Sum of flow lengths between zones
+        - ``'divergence'``: Sum of flow angles (radians) between zones
+        - ``'entropy'``: Count of flows between zones
 
     Returns
     -------
@@ -135,10 +135,10 @@ def _build_od_matrix(fdf, o_zones, d_zones, weight='count'):
     zone_to_idx = {z: i for i, z in enumerate(zone_ids)}
     n = len(zone_ids)
 
-    if weight == 'volume' and 'volume' in fdf.columns:
-        w_values = fdf['volume'].values
-    elif weight == 'length':
+    if weight == 'length':
         w_values = fdf.length.values
+    elif weight == 'divergence':
+        w_values = fdf.angle.values
     else:
         w_values = np.ones(len(fdf))
 
@@ -317,6 +317,71 @@ def _calculate_rotated_point(transform, n_row, i, j):
     i = n_row - i - 1
     x = j + 0.5
     y = i + 0.5
+    point = transform.transform_point((x, y))
+    return point[0], point[1]
+
+
+def _calculate_matrix_anchor_point(transform, n_rows, n_cols, side, index):
+    """Calculate matrix anchor point on rotated matrix edge.
+
+    Parameters
+    ----------
+    transform : matplotlib.transforms.Transform
+        The affine transform returned by ``_rotate_matrix``.
+    n_rows : int
+        Number of matrix rows.
+    n_cols : int
+        Number of matrix columns.
+    side : {'top', 'left'}
+        Matrix edge used by MapTrix guide lines.
+
+        - ``'top'``: origin anchors, one anchor per matrix column.
+        - ``'left'``: destination anchors, one anchor per matrix row.
+
+    index : int
+        Column index for ``side='top'`` or row index for ``side='left'``.
+
+    Returns
+    -------
+    x, y : float
+        Rotated matrix anchor point in matrix axes data coordinates.
+
+    Notes
+    -----
+    The unrotated matrix is drawn by ``imshow`` with::
+
+        extent=[0, n_cols, 0, n_rows]
+        origin='upper'
+
+    Therefore:
+
+    - top edge is ``y = n_rows``;
+    - left edge is ``x = 0``;
+    - column center on top edge is ``x = index + 0.5``;
+    - row center on left edge is ``y = n_rows - index - 0.5``.
+
+    These points lie exactly on the same grid lines drawn by
+    ``_rotate_matrix``.
+    """
+    if side == "top":
+        if not (0 <= index < n_cols):
+            raise IndexError(
+                f"top anchor index {index} out of range for n_cols={n_cols}"
+            )
+        x = index + 0.5
+        y = n_rows
+
+    elif side == "left":
+        if not (0 <= index < n_rows):
+            raise IndexError(
+                f"left anchor index {index} out of range for n_rows={n_rows}"
+            )
+        x = 0.0
+        y = n_rows - index - 0.5
+
+    else:
+        raise ValueError("side must be either 'top' or 'left'")
+
     point = transform.transform_point((x, y))
     return point[0], point[1]
 

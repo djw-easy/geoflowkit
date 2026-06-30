@@ -41,7 +41,7 @@ fdf = read_csv(
 print(f'Loaded {len(fdf):,} flows')
 
 # Subsample for faster rendering (adjust N to taste)
-N = 500
+N = 5000
 np.random.seed(42)
 indices = np.random.choice(len(fdf), size=N, replace=False)
 fdf_sample = fdf.iloc[indices].reset_index(drop=True)
@@ -102,8 +102,8 @@ fig2 = maptrix(
     in_title='Inflow',
     title_fontsize=16,
     figsize=(16, 9),
-    leader_center_weight=3.0,
-    leader_sep_weight=2.0,
+    leader_center_weight=1.0,
+    leader_sep_weight=8.0,
 )
 fig2.savefig('demo_maptrix.png', dpi=150, bbox_inches='tight')
 print('Saved demo_maptrix.png')
