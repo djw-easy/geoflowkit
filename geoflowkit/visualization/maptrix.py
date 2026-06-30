@@ -30,6 +30,10 @@ from geoflowkit.visualization._utils import (
     _compute_representative_points,
     _prepare_zones,
 )
+from geoflowkit.visualization._gp_optimizer import (
+    GPLayoutOptimizer,
+    gp_polyline_geometry,
+)
 
 
 class MapTrixVisualizer:
@@ -112,7 +116,8 @@ class MapTrixVisualizer:
                  leader_min_c_gap=0.003, leader_max_candidates=45,
                  leader_split_candidates=25,
                  leader_split_balance_weight=0.05,
-                 show_split_lines=False):
+                 show_split_lines=False,
+                 use_gp=True, gp_random_state=None):
         self.zones = zones
         self.zone_id_col = zone_id_col
         self.weight = weight
@@ -130,6 +135,8 @@ class MapTrixVisualizer:
         self.title_fontsize = title_fontsize
         self.include_self_flows = include_self_flows
         self.show_split_lines = show_split_lines
+        self.use_gp = use_gp
+        self._gp_random_state = gp_random_state
 
         # fit-time
         self.matrix_ = None
@@ -153,6 +160,10 @@ class MapTrixVisualizer:
         self._d_scatter = None
         self._o_labels = []
         self._d_labels = []
+
+        # GP result cache (populated by plot() when use_gp=True)
+        self._gp_origin_result = None
+        self._gp_dest_result = None
 
         # guide-line geometry
         self._leader_angle_deg = 45.0
@@ -268,58 +279,262 @@ class MapTrixVisualizer:
         self._im = im
         self._transform = transform
 
-        # Joint layout optimisation: split lines + matrix ordering
+        # Layout optimisation
         if need_opt:
-            o_pos, d_pos = self._compute_guide_positions(fig, ax_map_o, ax_map_d)
+            if self.use_gp:
+                # ---- Genetic programming ----
+                self._run_gp_optimisation(fig, ax_map_o, ax_map_d, ax_matrix)
+            else:
+                # ---- DP optimisation (legacy) ----
+                o_pos, d_pos = self._compute_guide_positions(
+                    fig, ax_map_o, ax_map_d)
 
-            try:
-                new_o, new_d, new_o_split, new_d_split = self._optimize_layout_joint(
-                    fig=fig,
-                    ax_map_o=ax_map_o,
-                    ax_map_d=ax_map_d,
-                    ax_matrix=ax_matrix,
-                    origin_positions=o_pos,
-                    dest_positions=d_pos,
+                try:
+                    new_o, new_d, new_o_split, new_d_split = \
+                        self._optimize_layout_joint(
+                            fig=fig,
+                            ax_map_o=ax_map_o,
+                            ax_map_d=ax_map_d,
+                            ax_matrix=ax_matrix,
+                            origin_positions=o_pos,
+                            dest_positions=d_pos,
+                        )
+                except RuntimeError:
+                    new_o, new_d = list(self.o_order_), list(self.d_order_)
+                    new_o_split, new_d_split = (
+                        self.origin_split_y_, self.dest_split_y_)
+
+                changed = (
+                    new_o != list(self.o_order_)
+                    or new_d != list(self.d_order_)
+                    or self.origin_split_y_ != new_o_split
+                    or self.dest_split_y_ != new_d_split
                 )
-            except RuntimeError:
-                # Optimisation failed — keep the initial fit-time ordering.
-                new_o, new_d = list(self.o_order_), list(self.d_order_)
-                new_o_split, new_d_split = self.origin_split_y_, self.dest_split_y_
 
-            changed = (
-                new_o != list(self.o_order_)
-                or new_d != list(self.d_order_)
-                or self.origin_split_y_ != new_o_split
-                or self.dest_split_y_ != new_d_split
-            )
+                if changed:
+                    self.o_order_ = new_o
+                    self.d_order_ = new_d
+                    self.origin_split_y_ = new_o_split
+                    self.dest_split_y_ = new_d_split
 
-            if changed:
-                self.o_order_ = new_o
-                self.d_order_ = new_d
-                self.origin_split_y_ = new_o_split
-                self.dest_split_y_ = new_d_split
+                    self._apply_ordering()
 
-                self._apply_ordering()
+                    fig.clear()
+                    ax_map_o, ax_map_d, ax_matrix, im, transform = (
+                        self._build_figure(fig))
+                    plt.subplots_adjust(
+                        hspace=0.01, wspace=-0.15, left=0.0001)
+                    fig.canvas.draw()
 
-                fig.clear()
-                ax_map_o, ax_map_d, ax_matrix, im, transform = self._build_figure(fig)
-                plt.subplots_adjust(hspace=0.01, wspace=-0.15, left=0.0001)
-                fig.canvas.draw()
-
-                self._im = im
-                self._transform = transform
+                    self._im = im
+                    self._transform = transform
 
         self._draw_colorbar(fig, ax_matrix)
         fig.canvas.draw()
 
         self._debug_draw_matrix_anchors(fig, ax_matrix)
 
-        self._draw_guide_lines(fig, ax_map_o, ax_map_d, ax_matrix)
+        # Draw guide lines
+        if self.use_gp and self._gp_origin_result is not None:
+            self._draw_gp_guide_lines(fig, ax_map_o, ax_map_d)
+        else:
+            self._draw_guide_lines(fig, ax_map_o, ax_map_d, ax_matrix)
         return fig
 
     def fit_plot(self, fdf, fig=None, figsize=(14, 8)):
         self.fit(fdf)
         return self.plot(fig=fig, figsize=figsize)
+
+    # ==================================================================
+    # GP optimisation
+    # ==================================================================
+
+    def _run_gp_optimisation(self, fig, ax_map_o, ax_map_d, ax_matrix):
+        """Run GP layout optimisation for both sides."""
+        n_rows, n_cols = self.matrix_.shape
+        transform = self._transform
+
+        # ---- Origin side ----
+        if len(self.o_order_) > 1:
+            origin_ids = list(self.o_order_)
+            origin_centroids_fig = {
+                z: _ax_to_fig(
+                    ax_map_o, fig, *self.zone_centroids_[z])
+                for z in origin_ids
+            }
+
+            gp_origin = GPLayoutOptimizer(
+                angle_deg=self._leader_angle_deg,
+                center_weight=self._leader_center_weight,
+                spacing_weight=self._leader_sep_weight,
+                random_state=self._gp_random_state,
+            )
+            self._gp_origin_result = gp_origin.optimize(
+                zone_ids=origin_ids,
+                zone_geometries=self._zone_geometries_,
+                zone_centroids_fig=origin_centroids_fig,
+                ax_map=ax_map_o,
+                ax_matrix=ax_matrix,
+                fig=fig,
+                matrix_shape=(n_rows, n_cols),
+                transform=transform,
+                is_origin=True,
+            )
+            self.o_order_ = self._gp_origin_result["order"]
+        else:
+            self._gp_origin_result = None
+
+        # ---- Destination side ----
+        if len(self.d_order_) > 1:
+            dest_ids = list(self.d_order_)
+            dest_centroids_fig = {
+                z: _ax_to_fig(
+                    ax_map_d, fig, *self.zone_centroids_[z])
+                for z in dest_ids
+            }
+
+            gp_dest = GPLayoutOptimizer(
+                angle_deg=self._leader_angle_deg,
+                center_weight=self._leader_center_weight,
+                spacing_weight=self._leader_sep_weight,
+                random_state=self._gp_random_state,
+            )
+            self._gp_dest_result = gp_dest.optimize(
+                zone_ids=dest_ids,
+                zone_geometries=self._zone_geometries_,
+                zone_centroids_fig=dest_centroids_fig,
+                ax_map=ax_map_d,
+                ax_matrix=ax_matrix,
+                fig=fig,
+                matrix_shape=(n_rows, n_cols),
+                transform=transform,
+                is_origin=False,
+            )
+            self.d_order_ = self._gp_dest_result["order"]
+        else:
+            self._gp_dest_result = None
+
+        # Apply ordering and rebuild figure with new matrix layout
+        changed = (self._gp_origin_result is not None
+                   or self._gp_dest_result is not None)
+        if changed:
+            self._apply_ordering()
+            fig.clear()
+            ax_map_o, ax_map_d, ax_matrix, im, transform = (
+                self._build_figure(fig))
+            plt.subplots_adjust(
+                hspace=0.01, wspace=-0.15, left=0.0001)
+            fig.canvas.draw()
+            self._im = im
+            self._transform = transform
+            # Rebuild GP geoms using the new figure axes
+            self._recompute_gp_results(
+                fig, ax_map_o, ax_map_d, ax_matrix, transform,
+                n_rows, n_cols)
+
+    def _recompute_gp_results(self, fig, ax_map_o, ax_map_d,
+                              ax_matrix, transform, n_rows, n_cols):
+        """Recompute GP guide-line geoms after figure rebuild."""
+        from geoflowkit.visualization._gp_optimizer import gp_polyline_geometry
+
+        for side, result, ax_map in [
+            ('origin', self._gp_origin_result, ax_map_o),
+            ('dest', self._gp_dest_result, ax_map_d),
+        ]:
+            if result is None:
+                continue
+
+            is_origin = (side == 'origin')
+            order = result['order']
+            pos_data = result.get('positions_data', {})
+
+            # Recompute matrix anchors in figure coords for each position
+            matrix_anchors = []
+            for idx in range(len(order)):
+                side_key = "top" if is_origin else "left"
+                mx, my = _calculate_matrix_anchor_point(
+                    transform, n_rows, n_cols, side_key, idx)
+                mx_fig, my_fig = _ax_to_fig(ax_matrix, fig, mx, my)
+                matrix_anchors.append((mx_fig, my_fig))
+
+            # Build new figure-coordinate geoms from stable data positions
+            positions_fig = {}
+            geoms = []
+            for pos, zid in enumerate(order):
+                dp = pos_data.get(zid)
+                if dp is not None:
+                    map_fig = _ax_to_fig(ax_map, fig, dp[0], dp[1])
+                else:
+                    cx, cy = self.zone_centroids_.get(zid, (0, 0))
+                    map_fig = _ax_to_fig(ax_map, fig, cx, cy)
+                matrix_fig = matrix_anchors[pos]
+                g = gp_polyline_geometry(
+                    map_fig, matrix_fig, self._leader_angle_deg)
+                positions_fig[zid] = map_fig
+                geoms.append({
+                    'zid': zid,
+                    'geom': g,
+                    'map_fig': map_fig,
+                    'matrix_fig': matrix_fig,
+                })
+
+            # Update result in-place
+            result['geoms'] = geoms
+            result['positions_fig'] = positions_fig
+
+    def _draw_gp_guide_lines(self, fig, ax_map_o, ax_map_d):
+        """Draw guide lines directly from GP-optimised results."""
+        import numpy as np
+        from matplotlib.lines import Line2D
+        from geoflowkit.visualization._utils import (
+            _fig_to_ax, _linear_scaling, _plot_centroids, _plot_labels)
+
+        # Line-width scaling
+        def _width_map(flow_dict):
+            if not flow_dict:
+                return {}
+            vals = np.array(list(flow_dict.values()))
+            widths = _linear_scaling(vals, (0.5, 2.5))
+            return {z: w for z, w in zip(flow_dict.keys(), widths)}
+
+        outflow_w_map = _width_map(self._outflows)
+        inflow_w_map = _width_map(self._inflows)
+
+        for side, result, ax, zid_order, flow_dict, scatter, labels, width_map in [
+            ('origin', self._gp_origin_result, ax_map_o,
+             self.o_order_, self._outflows,
+             '_o_scatter', '_o_labels', outflow_w_map),
+            ('dest', self._gp_dest_result, ax_map_d,
+             self.d_order_, self._inflows,
+             '_d_scatter', '_d_labels', inflow_w_map),
+        ]:
+            if result is None:
+                continue
+
+            positions = {}
+            for item in result['geoms']:
+                zid = item['zid']
+                geom = item['geom']
+                p_x, p_y = geom['p']
+                q_x, q_y = geom['q']
+                m_x, m_y = geom['m']
+
+                fig.add_artist(Line2D(
+                    [p_x, q_x, m_x],
+                    [p_y, q_y, m_y],
+                    transform=fig.transFigure,
+                    color=self.line_color,
+                    linewidth=width_map.get(zid, 1.0),
+                    alpha=self.line_alpha,
+                    solid_capstyle='round',
+                    zorder=10,
+                ))
+
+                data_xy = _fig_to_ax(ax, fig, p_x, p_y)
+                positions[zid] = (data_xy[0], data_xy[1])
+
+            self._redraw_centroids(
+                ax, positions, zid_order, flow_dict, scatter, labels)
 
     # ==================================================================
     # Figure construction
@@ -1627,6 +1842,7 @@ def maptrix(fdf, zones, zone_id_col=None, weight='count',
             leader_split_candidates=25,
             leader_split_balance_weight=0.05,
             show_split_lines=False,
+            use_gp=True, gp_random_state=None,
             fig=None, figsize=(14, 8)):
     """Create a MapTrix visualisation for flow data.
 
@@ -1698,5 +1914,6 @@ def maptrix(fdf, zones, zone_id_col=None, weight='count',
         leader_split_candidates=leader_split_candidates,
         leader_split_balance_weight=leader_split_balance_weight,
         show_split_lines=show_split_lines,
+        use_gp=use_gp, gp_random_state=gp_random_state,
     )
     return vis.fit_plot(fdf, fig=fig, figsize=figsize)
