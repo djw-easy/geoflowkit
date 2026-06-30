@@ -54,7 +54,7 @@ class FTSNE:
 
     Parameters
     ----------
-    perplexity : float, default=30.0
+    perplexity : float, default=60.0
         The perplexity is related to the number of nearest neighbors that
         is used in other manifold learning algorithms. Larger datasets
         usually require a larger perplexity. Consider selecting a value
@@ -220,7 +220,7 @@ class FTSNE:
 
     @validate_params(_parameter_constraints, prefer_skip_nested_validation=True)
     def __init__(self, 
-                 perplexity=30.0, 
+                 perplexity=60.0, 
                  learning_rate=0.1,
                  max_iter=100, 
                  early_exaggeration=12.0,
