@@ -351,7 +351,13 @@ class MapTrixVisualizer:
     # ==================================================================
 
     def _run_gp_optimisation(self, fig, ax_map_o, ax_map_d, ax_matrix):
-        """Run GP layout optimisation for both sides."""
+        """Run GP layout optimisation for both sides.
+
+        Runs GP using the *current* figure axes.  After optimisation the
+        ordering and matrix data are updated in-place on the existing
+        axes — the figure is **not** cleared or rebuilt, so all
+        figure-coordinate positions computed by GP remain valid.
+        """
         n_rows, n_cols = self.matrix_.shape
         transform = self._transform
 
@@ -415,75 +421,18 @@ class MapTrixVisualizer:
         else:
             self._gp_dest_result = None
 
-        # Apply ordering and rebuild figure with new matrix layout
+        # Apply ordering and update matrix *without* rebuilding figure.
+        # This keeps all figure-coordinate geoms from GP valid.
         changed = (self._gp_origin_result is not None
                    or self._gp_dest_result is not None)
         if changed:
             self._apply_ordering()
-            fig.clear()
-            ax_map_o, ax_map_d, ax_matrix, im, transform = (
-                self._build_figure(fig))
-            plt.subplots_adjust(
-                hspace=0.01, wspace=-0.15, left=0.0001)
+            # Update the imshow data in-place (same axes, same transform)
+            if self._im is not None:
+                self._im.set_data(self.matrix_)
             fig.canvas.draw()
-            self._im = im
-            self._transform = transform
-            # Rebuild GP geoms using the new figure axes
-            self._recompute_gp_results(
-                fig, ax_map_o, ax_map_d, ax_matrix, transform,
-                n_rows, n_cols)
 
         return ax_map_o, ax_map_d, ax_matrix
-
-    def _recompute_gp_results(self, fig, ax_map_o, ax_map_d,
-                              ax_matrix, transform, n_rows, n_cols):
-        """Recompute GP guide-line geoms after figure rebuild."""
-        from geoflowkit.visualization._gp_optimizer import gp_polyline_geometry
-
-        for side, result, ax_map in [
-            ('origin', self._gp_origin_result, ax_map_o),
-            ('dest', self._gp_dest_result, ax_map_d),
-        ]:
-            if result is None:
-                continue
-
-            is_origin = (side == 'origin')
-            order = result['order']
-            pos_data = result.get('positions_data', {})
-
-            # Recompute matrix anchors in figure coords for each position
-            matrix_anchors = []
-            for idx in range(len(order)):
-                side_key = "top" if is_origin else "left"
-                mx, my = _calculate_matrix_anchor_point(
-                    transform, n_rows, n_cols, side_key, idx)
-                mx_fig, my_fig = _ax_to_fig(ax_matrix, fig, mx, my)
-                matrix_anchors.append((mx_fig, my_fig))
-
-            # Build new figure-coordinate geoms from stable data positions
-            positions_fig = {}
-            geoms = []
-            for pos, zid in enumerate(order):
-                dp = pos_data.get(zid)
-                if dp is not None:
-                    map_fig = _ax_to_fig(ax_map, fig, dp[0], dp[1])
-                else:
-                    cx, cy = self.zone_centroids_.get(zid, (0, 0))
-                    map_fig = _ax_to_fig(ax_map, fig, cx, cy)
-                matrix_fig = matrix_anchors[pos]
-                g = gp_polyline_geometry(
-                    map_fig, matrix_fig, self._leader_angle_deg)
-                positions_fig[zid] = map_fig
-                geoms.append({
-                    'zid': zid,
-                    'geom': g,
-                    'map_fig': map_fig,
-                    'matrix_fig': matrix_fig,
-                })
-
-            # Update result in-place
-            result['geoms'] = geoms
-            result['positions_fig'] = positions_fig
 
     def _draw_gp_guide_lines(self, fig, ax_map_o, ax_map_d):
         """Draw guide lines directly from GP-optimised results."""
@@ -518,6 +467,8 @@ class MapTrixVisualizer:
             for item in result['geoms']:
                 zid = item['zid']
                 geom = item['geom']
+                if geom is None:
+                    continue
                 p_x, p_y = geom['p']
                 q_x, q_y = geom['q']
                 m_x, m_y = geom['m']

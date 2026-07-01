@@ -616,7 +616,7 @@ class GPLayoutOptimizer:
         ordered_zids = list(zone_ids[perm])
         positions_fig = {}
         positions_data = {}
-        geoms_dict = {}
+        geoms_list = []
         selections = {}
 
         for pos in range(N):
@@ -630,7 +630,12 @@ class GPLayoutOptimizer:
             g = gp_polyline_geometry(map_fig, matrix_fig, self.angle_deg)
 
             positions_fig[zid] = map_fig
-            geoms_dict[zid] = g if g is not None else None
+            geoms_list.append({
+                'zid': zid,
+                'geom': g,
+                'map_fig': map_fig,
+                'matrix_fig': matrix_fig,
+            })
 
             # Also store data-coordinate position (stable across figure rebuilds)
             dx, dy = _fig_to_ax(
@@ -642,7 +647,7 @@ class GPLayoutOptimizer:
             "order": ordered_zids,
             "positions_fig": positions_fig,
             "positions_data": positions_data,
-            "geoms": geoms_dict,
+            "geoms": geoms_list,
             "selections": selections,
             "linewidths": self._linewidths,
             "fitness": float(fitness),
