@@ -24,7 +24,7 @@ from geoflowkit.visualization._utils import (
 # Guide-line geometry (no split-line dependency)
 # ---------------------------------------------------------------------------
 
-def gp_polyline_geometry(map_fig, matrix_fig, angle_deg=45.0):
+def gp_polyline_geometry(map_fig, matrix_fig, angle_deg=45.0, split_y=None):
     """Compute L-shaped guide line geometry *without* a split line.
 
     The guide line consists of a diagonal segment at *angle_deg* from the
@@ -63,6 +63,13 @@ def gp_polyline_geometry(map_fig, matrix_fig, angle_deg=45.0):
         return None
 
     is_upper = dy > 0
+
+    # Detect direction mismatch (used by caller for soft penalty)
+    wrong_direction = False
+    if split_y is not None:
+        actual_upper = py >= split_y
+        wrong_direction = (actual_upper != is_upper)
+
     gap = abs(dy)
 
     cross_x = px + gap / tan_k
@@ -80,6 +87,7 @@ def gp_polyline_geometry(map_fig, matrix_fig, angle_deg=45.0):
         "is_upper": is_upper,
         "diag": (p, q),
         "horiz": (q, m),
+        "wrong_direction": wrong_direction,
     }
 
 
@@ -168,6 +176,8 @@ class GPLayoutOptimizer:
       the zone → matrix-column/row assignment.
     - ``candidate_idx`` : int array of length *N*.  Each entry picks which
       sampled candidate point to use for the corresponding zone.
+    - ``split_y`` : float in [box.y0, box.y1].  Horizontal split line
+      dividing upper/lower guide-line directions.
 
     Parameters
     ----------
@@ -181,6 +191,8 @@ class GPLayoutOptimizer:
         Fitness weight for centroid deviation.
     spacing_weight : float
         Fitness weight for non-uniform elbow spacing.
+    balance_weight : float
+        Fitness weight for unbalanced split (n_upper vs n_lower).
     crossing_penalty : float
         Penalty applied when *any* pair of guide lines crosses (default 1e8).
     mutation_prob : float
@@ -196,7 +208,7 @@ class GPLayoutOptimizer:
     """
 
     def __init__(self, angle_deg=45.0, pop_size=200, max_generations=100,
-                 center_weight=1.0, spacing_weight=8.0,
+                 center_weight=1.0, spacing_weight=8.0, balance_weight=0.05,
                  crossing_penalty=1e8,
                  mutation_prob=0.15, elite_count=2, tournament_size=3,
                  patience=30, random_state=None):
@@ -205,6 +217,7 @@ class GPLayoutOptimizer:
         self.max_generations = max_generations
         self.center_weight = center_weight
         self.spacing_weight = spacing_weight
+        self.balance_weight = balance_weight
         self.crossing_penalty = crossing_penalty
         self.mutation_prob = mutation_prob
         self.elite_count = elite_count
@@ -271,6 +284,11 @@ class GPLayoutOptimizer:
         self._ax_map = ax_map
         self._fig = fig
 
+        # Split-y range from map axis bbox
+        box = ax_map.get_position()
+        self._split_y_min = box.y0 + 1e-4
+        self._split_y_max = box.y1 - 1e-4
+
         # Pre-compute candidate map points for every zone
         self._zone_candidates = self._build_all_candidates(
             zone_ids, zone_geometries, zone_centroids_fig, ax_map, fig,
@@ -286,7 +304,9 @@ class GPLayoutOptimizer:
         )
 
         # Build initial population
-        pop_chromosomes, pop_fitness = self._initialize_population()
+        pop_data = self._initialize_population()
+        pop_data
+        pop_chromosomes, pop_fitness = pop_data
 
         # Evolution loop
         best_fitness = pop_fitness.min()
@@ -294,6 +314,7 @@ class GPLayoutOptimizer:
         best_chromosome = {
             "order_keys": pop_chromosomes["order_keys"][best_idx],
             "candidate_idx": pop_chromosomes["candidate_idx"][best_idx],
+            "split_y": pop_chromosomes["split_y"][best_idx],
         }
         no_improve = 0
 
@@ -301,6 +322,7 @@ class GPLayoutOptimizer:
             new_chromosomes = {
                 "order_keys": np.empty((self.pop_size, N)),
                 "candidate_idx": np.empty((self.pop_size, N), dtype=int),
+                "split_y": np.empty(self.pop_size),
             }
 
             # Elitism
@@ -310,6 +332,8 @@ class GPLayoutOptimizer:
                     pop_chromosomes["order_keys"][ei].copy()
                 new_chromosomes["candidate_idx"][i] = \
                     pop_chromosomes["candidate_idx"][ei].copy()
+                new_chromosomes["split_y"][i] = \
+                    pop_chromosomes["split_y"][ei]
 
             # Fill rest via tournament + crossover + mutation
             for i in range(self.elite_count, self.pop_size, 2):
@@ -318,28 +342,34 @@ class GPLayoutOptimizer:
                 while p2 == p1:
                     p2 = np.random.choice(pop_chromosomes["order_keys"].shape[0])
 
-                c1_ok, c1_ci = self._crossover(
+                c1_ok, c1_ci, c1_sy = self._crossover(
                     pop_chromosomes["order_keys"][p1],
                     pop_chromosomes["order_keys"][p2],
                     pop_chromosomes["candidate_idx"][p1],
                     pop_chromosomes["candidate_idx"][p2],
+                    pop_chromosomes["split_y"][p1],
+                    pop_chromosomes["split_y"][p2],
                 )
-                c2_ok, c2_ci = self._crossover(
+                c2_ok, c2_ci, c2_sy = self._crossover(
                     pop_chromosomes["order_keys"][p2],
                     pop_chromosomes["order_keys"][p1],
                     pop_chromosomes["candidate_idx"][p2],
                     pop_chromosomes["candidate_idx"][p1],
+                    pop_chromosomes["split_y"][p2],
+                    pop_chromosomes["split_y"][p1],
                 )
 
-                c1_ok = self._mutate(c1_ok, c1_ci)
+                c1_ok, c1_sy = self._mutate(c1_ok, c1_ci, c1_sy)
                 if i < self.pop_size:
                     new_chromosomes["order_keys"][i] = c1_ok
                     new_chromosomes["candidate_idx"][i] = c1_ci
+                    new_chromosomes["split_y"][i] = c1_sy
 
-                c2_ok = self._mutate(c2_ok, c2_ci)
+                c2_ok, c2_sy = self._mutate(c2_ok, c2_ci, c2_sy)
                 if i + 1 < self.pop_size:
                     new_chromosomes["order_keys"][i + 1] = c2_ok
                     new_chromosomes["candidate_idx"][i + 1] = c2_ci
+                    new_chromosomes["split_y"][i + 1] = c2_sy
 
             # Evaluate
             pop_chromosomes = new_chromosomes
@@ -347,6 +377,7 @@ class GPLayoutOptimizer:
                 self._fitness(
                     pop_chromosomes["order_keys"][j],
                     pop_chromosomes["candidate_idx"][j],
+                    pop_chromosomes["split_y"][j],
                 )
                 for j in range(self.pop_size)
             ])
@@ -358,6 +389,7 @@ class GPLayoutOptimizer:
                 best_chromosome = {
                     "order_keys": pop_chromosomes["order_keys"][best_idx].copy(),
                     "candidate_idx": pop_chromosomes["candidate_idx"][best_idx].copy(),
+                    "split_y": float(pop_chromosomes["split_y"][best_idx]),
                 }
                 no_improve = 0
             else:
@@ -373,6 +405,7 @@ class GPLayoutOptimizer:
         return self._decode_chromosome(
             best_chromosome["order_keys"],
             best_chromosome["candidate_idx"],
+            best_chromosome["split_y"],
             fitness=best_fitness,
             generations=self._best_gen_,
         )
@@ -388,6 +421,9 @@ class GPLayoutOptimizer:
 
         for i in range(self.pop_size):
             order_keys[i] = self._rng.rand(N)
+
+        split_y = self._rng.uniform(
+            self._split_y_min, self._split_y_max, self.pop_size)
 
         for i in range(self.pop_size):
             for j in range(N):
@@ -416,10 +452,10 @@ class GPLayoutOptimizer:
             order_keys[1] = seed_keys_rev
 
         fitness = np.array([
-            self._fitness(order_keys[j], candidate_idx[j])
+            self._fitness(order_keys[j], candidate_idx[j], split_y[j])
             for j in range(self.pop_size)
         ])
-        return {"order_keys": order_keys, "candidate_idx": candidate_idx}, fitness
+        return {"order_keys": order_keys, "candidate_idx": candidate_idx, "split_y": split_y}, fitness
 
     # ------------------------------------------------------------------
     # Candidate sampling
@@ -488,7 +524,7 @@ class GPLayoutOptimizer:
     # Genetic operators
     # ------------------------------------------------------------------
 
-    def _crossover(self, ok1, ok2, ci1, ci2):
+    def _crossover(self, ok1, ok2, ci1, ci2, sy1, sy2):
         """Uniform crossover producing one child."""
         N = self._N
         child_ok = np.zeros(N)
@@ -498,9 +534,12 @@ class GPLayoutOptimizer:
         child_ok[~mask] = ok2[~mask]
         child_ci[mask] = ci1[mask]
         child_ci[~mask] = ci2[~mask]
-        return child_ok, child_ci
+        # Arithmetic crossover for split_y
+        alpha = self._rng.rand()
+        child_sy = alpha * sy1 + (1 - alpha) * sy2
+        return child_ok, child_ci, child_sy
 
-    def _mutate(self, order_keys, candidate_idx):
+    def _mutate(self, order_keys, candidate_idx, split_y):
         """Mutate in-place."""
         N = self._N
         # Mutate order_keys
@@ -514,7 +553,13 @@ class GPLayoutOptimizer:
             n_cands = len(self._zone_candidates[self._zone_ids[j]])
             if n_cands > 1:
                 candidate_idx[j] = self._rng.randint(0, n_cands)
-        return order_keys
+
+        # Mutate split_y
+        if self._rng.rand() < self.mutation_prob:
+            split_y += self._rng.normal(0, 0.02)
+            split_y = float(np.clip(split_y, self._split_y_min, self._split_y_max))
+
+        return order_keys, split_y
 
     # ------------------------------------------------------------------
     # Selection
@@ -534,7 +579,7 @@ class GPLayoutOptimizer:
     # Fitness
     # ------------------------------------------------------------------
 
-    def _fitness(self, order_keys, candidate_idx):
+    def _fitness(self, order_keys, candidate_idx, split_y):
         """Compute fitness for a chromosome. Lower is better."""
         N = self._N
         perm = np.argsort(order_keys)
@@ -547,6 +592,7 @@ class GPLayoutOptimizer:
         geoms = []
         center_cost = 0.0
         cross_xs = []
+        n_upper = 0
 
         for pos in range(N):
             zid = ordered_zids[pos]
@@ -561,12 +607,15 @@ class GPLayoutOptimizer:
             matrix_fig = self._matrix_anchors_fig[pos]
 
             # Geometry
-            g = gp_polyline_geometry(map_fig, matrix_fig, self.angle_deg)
+            g = gp_polyline_geometry(map_fig, matrix_fig, self.angle_deg,
+                                      split_y=split_y)
             if g is None:
                 return self.crossing_penalty
 
             geoms.append(g)
             cross_xs.append(g["q"][0])
+            if g["is_upper"]:
+                n_upper += 1
 
             # Center deviation
             raw = centroids.get(zid, map_fig)
@@ -585,6 +634,13 @@ class GPLayoutOptimizer:
         if has_cross:
             return self.crossing_penalty
 
+        # Soft penalty for wrong-direction guide lines
+        wrong_dir_count = sum(
+            1 for g in geoms
+            if g is not None and g.get("wrong_direction", False))
+        if wrong_dir_count == N:
+            return self.crossing_penalty  # all wrong -> infeasible
+
         # Spacing uniformity
         cross_xs = np.array(cross_xs)
         if N > 1:
@@ -598,16 +654,21 @@ class GPLayoutOptimizer:
         else:
             gap_cv = 0.0
 
+        # Balance penalty
+        n_lower = N - n_upper
+        balance_cost = ((n_upper - n_lower) / max(N, 1)) ** 2
+
         return (
             self.center_weight * center_cost
             + self.spacing_weight * gap_cv
+            + self.balance_weight * balance_cost
         )
 
     # ------------------------------------------------------------------
     # Decode
     # ------------------------------------------------------------------
 
-    def _decode_chromosome(self, order_keys, candidate_idx, fitness, generations):
+    def _decode_chromosome(self, order_keys, candidate_idx, split_y, fitness, generations):
         """Convert best chromosome to result dict."""
         N = self._N
         perm = np.argsort(order_keys)
@@ -627,7 +688,8 @@ class GPLayoutOptimizer:
             selections[zid] = ci
             map_fig = self._zone_candidates[zid][ci]
             matrix_fig = self._matrix_anchors_fig[pos]
-            g = gp_polyline_geometry(map_fig, matrix_fig, self.angle_deg)
+            g = gp_polyline_geometry(map_fig, matrix_fig, self.angle_deg,
+                                      split_y=split_y)
 
             positions_fig[zid] = map_fig
             geoms_list.append({
@@ -650,6 +712,7 @@ class GPLayoutOptimizer:
             "geoms": geoms_list,
             "selections": selections,
             "linewidths": self._linewidths,
+            "split_y": float(split_y),
             "fitness": float(fitness),
             "generations": generations,
             # metadata for rebuild after figure reset

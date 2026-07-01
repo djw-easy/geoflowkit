@@ -417,6 +417,16 @@ class MapTrixVisualizer:
                 data_xy = _fig_to_ax(ax, fig, p_x, p_y)
                 positions[zid] = (data_xy[0], data_xy[1])
 
+            # Draw split line if available
+            split_y = result.get('split_y')
+            if split_y is not None:
+                box = ax.get_position()
+                fig.add_artist(Line2D(
+                    [box.x0, box.x1], [split_y, split_y],
+                    transform=fig.transFigure, color='0.75',
+                    linewidth=0.8, linestyle='--', alpha=0.8,
+                    clip_on=False, zorder=8))
+
             self._redraw_centroids(
                 ax, positions, zid_order, flow_dict, scatter, labels)
 
