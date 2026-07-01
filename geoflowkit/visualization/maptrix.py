@@ -239,6 +239,12 @@ class MapTrixVisualizer:
         o_pos = [self._zone_to_idx[z] for z in self.o_order_]
         d_pos = [self._zone_to_idx[z] for z in self.d_order_]
         self.matrix_ = self._full_matrix[np.ix_(o_pos, d_pos)].T
+        # Re-apply NaN for self-flows based on actual zone ids
+        if not self.include_self_flows:
+            for j, d_zid in enumerate(self.d_order_):
+                for i, o_zid in enumerate(self.o_order_):
+                    if o_zid == d_zid:
+                        self.matrix_[j, i] = np.nan
 
     # ==================================================================
     # Plot
@@ -349,6 +355,11 @@ class MapTrixVisualizer:
             self.d_order_ = self._gp_dest_result["order"]
         else:
             self._gp_dest_result = None
+
+        # Sync destination ordering with origin so self-flow cells
+        # stay on the matrix diagonal (vertical white line after rotation).
+        if self._gp_origin_result is not None and not self.include_self_flows:
+            self.d_order_ = list(self.o_order_)
 
         # Apply ordering and update matrix *without* rebuilding figure.
         # This keeps all figure-coordinate geoms from GP valid.
