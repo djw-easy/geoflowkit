@@ -102,8 +102,8 @@ fig2 = maptrix(
     in_title='Inflow',
     title_fontsize=16,
     figsize=(16, 9),
-    leader_center_weight=1.0,
-    leader_sep_weight=8.0,
+    center_weight=1.0,
+    spacing_weight=8.0,
 )
 fig2.savefig('demo_maptrix.png', dpi=150, bbox_inches='tight')
 print('Saved demo_maptrix.png')
