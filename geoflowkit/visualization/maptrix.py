@@ -283,7 +283,8 @@ class MapTrixVisualizer:
         if need_opt:
             if self.use_gp:
                 # ---- Genetic programming ----
-                self._run_gp_optimisation(fig, ax_map_o, ax_map_d, ax_matrix)
+                ax_map_o, ax_map_d, ax_matrix = self._run_gp_optimisation(
+                    fig, ax_map_o, ax_map_d, ax_matrix)
             else:
                 # ---- DP optimisation (legacy) ----
                 o_pos, d_pos = self._compute_guide_positions(
@@ -431,6 +432,8 @@ class MapTrixVisualizer:
             self._recompute_gp_results(
                 fig, ax_map_o, ax_map_d, ax_matrix, transform,
                 n_rows, n_cols)
+
+        return ax_map_o, ax_map_d, ax_matrix
 
     def _recompute_gp_results(self, fig, ax_map_o, ax_map_d,
                               ax_matrix, transform, n_rows, n_cols):
