@@ -481,6 +481,7 @@ class MapTrixVisualizer:
                     linewidth=width_map.get(zid, 1.0),
                     alpha=self.line_alpha,
                     solid_capstyle='round',
+                    clip_on=False,
                     zorder=10,
                 ))
 
