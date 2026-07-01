@@ -196,7 +196,7 @@ class MapTrixVisualizer:
                 if rz in raw_idx and cz in raw_idx:
                     full_matrix[ri, ci] = raw_matrix[raw_idx[rz], raw_idx[cz]]
         if not self.include_self_flows:
-            np.fill_diagonal(full_matrix, 0.0)
+            np.fill_diagonal(full_matrix, np.nan)
         self._full_matrix = full_matrix
 
         # Per-zone flows
@@ -254,6 +254,7 @@ class MapTrixVisualizer:
         # Build figure
         ax_map_o, ax_map_d, ax_matrix, im, transform = self._build_figure(fig)
         plt.subplots_adjust(hspace=0.01, wspace=-0.15, left=0.0001)
+        self._draw_colorbar(fig, ax_matrix)
         fig.canvas.draw()
         self._im = im
         self._transform = transform
@@ -262,9 +263,6 @@ class MapTrixVisualizer:
         if len(self.o_order_) > 1 or len(self.d_order_) > 1:
             ax_map_o, ax_map_d, ax_matrix = self._run_gp_optimisation(
                 fig, ax_map_o, ax_map_d, ax_matrix)
-
-        self._draw_colorbar(fig, ax_matrix)
-        fig.canvas.draw()
 
         self._debug_draw_matrix_anchors(fig, ax_matrix)
 
@@ -479,9 +477,11 @@ class MapTrixVisualizer:
             ax.set_ylim(mny - pady, mxy + pady)
 
     def _draw_matrix(self, ax):
+        cmap = plt.get_cmap(self.matrix_cmap)
+        cmap.set_bad('white')
         im, transform = _rotate_matrix(
             ax, self.matrix_,
-            cmap=self.matrix_cmap, vmin=self.vmin, vmax=self.vmax,
+            cmap=cmap, vmin=self.vmin, vmax=self.vmax,
         )
         for spine in ax.spines.values():
             spine.set_visible(False)

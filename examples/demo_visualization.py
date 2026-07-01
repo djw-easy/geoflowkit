@@ -104,6 +104,7 @@ fig2 = maptrix(
     figsize=(16, 9),
     center_weight=1.0,
     spacing_weight=8.0,
+    include_self_flows=False
 )
 fig2.savefig('demo_maptrix.png', dpi=150, bbox_inches='tight')
 print('Saved demo_maptrix.png')
