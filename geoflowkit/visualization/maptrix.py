@@ -260,10 +260,10 @@ class MapTrixVisualizer:
         # Build figure
         ax_map_o, ax_map_d, ax_matrix, im, transform = self._build_figure(fig)
         plt.subplots_adjust(hspace=0.01, wspace=-0.15, left=0.0001)
-        self._draw_colorbar(fig, ax_matrix)
-        fig.canvas.draw()
         self._im = im
         self._transform = transform
+        self._draw_colorbar(fig, ax_matrix)
+        fig.canvas.draw()
 
         # GP layout optimisation
         if len(self.o_order_) > 1 or len(self.d_order_) > 1:
@@ -356,10 +356,10 @@ class MapTrixVisualizer:
         else:
             self._gp_dest_result = None
 
-        # Sync destination ordering with origin so self-flow cells
-        # stay on the matrix diagonal (vertical white line after rotation).
+        # Reverse destination ordering so self-flow cells land on the
+        # anti-diagonal, which becomes vertical after 45° CCW rotation.
         if self._gp_origin_result is not None and not self.include_self_flows:
-            self.d_order_ = list(self.o_order_)
+            self.d_order_ = list(reversed(self.o_order_))
 
         # Apply ordering and update matrix *without* rebuilding figure.
         # This keeps all figure-coordinate geoms from GP valid.
