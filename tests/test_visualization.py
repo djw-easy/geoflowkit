@@ -23,12 +23,8 @@ from geoflowkit.visualization._utils import (
     _plot_labels,
     _compute_representative_points,
 )
-from geoflowkit.visualization.od_matrix import (
-    ODMatrixVisualizer, od_matrix,
-)
-from geoflowkit.visualization.maptrix import (
-    MapTrixVisualizer, maptrix,
-)
+from geoflowkit.visualization.od_matrix import ODMatrixVisualizer
+from geoflowkit.visualization.maptrix import MapTrixVisualizer
 
 
 # ---------------------------------------------------------------------------
@@ -328,12 +324,12 @@ class TestODMatrixVisualizer(unittest.TestCase):
             vis.plot()
 
     def test_fit_plot_returns_ax(self):
-        ax = od_matrix(self.fdf, zones=self.zones)
+        ax = ODMatrixVisualizer(zones=self.zones).fit_plot(self.fdf)
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
     def test_with_figsize(self):
-        ax = od_matrix(self.fdf, zones=self.zones, figsize=(8, 6))
+        ax = ODMatrixVisualizer(zones=self.zones).fit_plot(self.fdf, figsize=(8, 6))
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
@@ -346,13 +342,13 @@ class TestODMatrixVisualizer(unittest.TestCase):
 
     def test_external_ax(self):
         fig, ax = plt.subplots()
-        result = od_matrix(self.fdf, zones=self.zones, ax=ax)
+        result = ODMatrixVisualizer(zones=self.zones).fit_plot(self.fdf, ax=ax)
         self.assertIs(result, ax)
         plt.close(fig)
 
     def test_custom_zone_id_col(self):
         zones = _make_named_zone_gdf()
-        ax = od_matrix(self.fdf, zones=zones, zone_id_col='name')
+        ax = ODMatrixVisualizer(zones=zones, zone_id_col='name').fit_plot(self.fdf)
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
@@ -407,24 +403,21 @@ class TestMapTrixVisualizer(unittest.TestCase):
             vis.plot()
 
     def test_fit_plot_returns_fig(self):
-        fig = maptrix(self.fdf, zones=self.zones, figsize=(10, 6))
+        fig = MapTrixVisualizer(zones=self.zones).fit_plot(self.fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_with_custom_titles(self):
-        fig = maptrix(
-            self.fdf, zones=self.zones,
-            out_title='SOURCE', in_title='SINK',
-            figsize=(10, 6),
-        )
+        fig = MapTrixVisualizer(
+            zones=self.zones, out_title='SOURCE', in_title='SINK',
+        ).fit_plot(self.fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_no_labels(self):
-        fig = maptrix(
-            self.fdf, zones=self.zones,
-            show_labels=False, figsize=(10, 6),
-        )
+        fig = MapTrixVisualizer(
+            zones=self.zones, show_labels=False,
+        ).fit_plot(self.fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
@@ -437,21 +430,20 @@ class TestMapTrixVisualizer(unittest.TestCase):
 
     def test_external_figure(self):
         fig = plt.figure(figsize=(12, 6))
-        result = maptrix(self.fdf, zones=self.zones, fig=fig)
+        result = MapTrixVisualizer(zones=self.zones).fit_plot(self.fdf, fig=fig)
         self.assertIs(result, fig)
         plt.close(fig)
 
     def test_custom_zone_id_col(self):
         zones = _make_named_zone_gdf()
-        fig = maptrix(self.fdf, zones=zones, zone_id_col='name',
-                      figsize=(10, 6))
+        fig = MapTrixVisualizer(zones=zones, zone_id_col='name').fit_plot(
+            self.fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_maptrix_with_figsize(self):
-        fig = maptrix(
-            self.fdf, zones=self.zones,
-            figsize=(10, 6),
+        fig = MapTrixVisualizer(zones=self.zones).fit_plot(
+            self.fdf, figsize=(10, 6),
         )
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
@@ -487,16 +479,108 @@ class TestEdgeCases(unittest.TestCase):
     def test_single_flow_od(self):
         flows = FlowSeries([Flow([[1, 1], [6, 6]])])
         fdf = FlowDataFrame({'v': [1]}, geometry=flows, crs="EPSG:4326")
-        ax = od_matrix(fdf, zones=self.zones)
+        ax = ODMatrixVisualizer(zones=self.zones).fit_plot(fdf)
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
     def test_single_flow_maptrix(self):
         flows = FlowSeries([Flow([[1, 1], [6, 6]])])
         fdf = FlowDataFrame({'v': [1]}, geometry=flows, crs="EPSG:4326")
-        fig = maptrix(fdf, zones=self.zones, figsize=(10, 6))
+        fig = MapTrixVisualizer(zones=self.zones).fit_plot(fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Asymmetric zones
+# ---------------------------------------------------------------------------
+
+class TestAsymmetricZones(unittest.TestCase):
+    def setUp(self):
+        self.fdf = _make_synthetic_fdf(6)
+        self.origin_zones = _make_zone_gdf()           # 4 zones: [0,1,2,3]
+
+        # dest_zones cover the synthetic flow destinations:
+        #   flows 0-2 → d ≈ (1.2, 6.2)   (zone 'a')
+        #   flows 3-5 → d ≈ (6.2, 6.2)   (zone 'b')
+        #   zone 'c' is extra (no inflow)
+        dest_polys = [
+            box(0, 5, 5, 10),    # 'a'
+            box(5, 5, 10, 10),   # 'b'
+            box(0, 0, 2, 2),     # 'c' — no flows
+        ]
+        self.dest_zones = gpd.GeoDataFrame(
+            {'zone_id': ['a', 'b', 'c']},
+            geometry=dest_polys, crs="EPSG:4326",
+        )
+
+    # --- ODMatrixVisualizer ---
+
+    def test_od_asymmetric_fit(self):
+        vis = ODMatrixVisualizer(
+            origin_zones=self.origin_zones, dest_zones=self.dest_zones,
+            dest_zone_id_col='zone_id',
+        )
+        vis.fit(self.fdf)
+        self.assertTrue(vis._asymmetric)
+        # o_ids=[0,1] (nonzero outflow), d_ids=['a','b'] (nonzero inflow)
+        self.assertEqual(len(vis.o_ids_), 2)
+        self.assertEqual(len(vis.d_ids_), 2)
+        self.assertIn(0, vis.o_ids_)
+        self.assertIn('a', vis.d_ids_)
+
+    def test_od_asymmetric_fit_plot(self):
+        vis = ODMatrixVisualizer(
+            origin_zones=self.origin_zones, dest_zones=self.dest_zones,
+            dest_zone_id_col='zone_id',
+        )
+        vis.fit(self.fdf)
+        ax = vis.plot(figsize=(8, 6))
+        self.assertIsNotNone(ax)
+        plt.close(ax.figure)
+
+    def test_od_asymmetric_origin_zones_only(self):
+        vis = ODMatrixVisualizer(origin_zones=self.origin_zones)
+        vis.fit(self.fdf)
+        self.assertFalse(vis._asymmetric)
+        self.assertEqual(len(vis.o_ids_), 2)   # zones 0,1
+        self.assertEqual(len(vis.d_ids_), 2)   # zones 2,3
+
+    def test_od_asymmetric_init_raises_without_args(self):
+        with self.assertRaises(TypeError):
+            ODMatrixVisualizer()
+
+    # --- MapTrixVisualizer ---
+
+    def test_maptrix_asymmetric_fit(self):
+        vis = MapTrixVisualizer(
+            origin_zones=self.origin_zones, dest_zones=self.dest_zones,
+            dest_zone_id_col='zone_id',
+        )
+        vis.fit(self.fdf)
+        self.assertTrue(vis._asymmetric)
+        self.assertIsNotNone(vis.matrix_)
+        self.assertIsNotNone(vis.o_order_)
+        self.assertIsNotNone(vis.d_order_)
+        self.assertEqual(len(vis.o_order_), vis.matrix_.shape[1])
+        self.assertEqual(len(vis.d_order_), vis.matrix_.shape[0])
+
+    def test_maptrix_asymmetric_plot(self):
+        vis = MapTrixVisualizer(
+            origin_zones=self.origin_zones, dest_zones=self.dest_zones,
+            dest_zone_id_col='zone_id',
+        )
+        vis.fit(self.fdf)
+        fig = vis.plot(figsize=(12, 8))
+        self.assertIsNotNone(fig)
+        plt.close(fig)
+
+    def test_maptrix_asymmetric_origin_zones_only(self):
+        vis = MapTrixVisualizer(origin_zones=self.origin_zones)
+        vis.fit(self.fdf)
+        self.assertFalse(vis._asymmetric)
+        self.assertEqual(len(vis.o_order_), 2)
+        self.assertEqual(len(vis.d_order_), 2)
 
 
 if __name__ == '__main__':

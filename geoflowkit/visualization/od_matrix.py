@@ -5,12 +5,15 @@ from :class:`~geoflowkit.flowdataframe.FlowDataFrame` instances, and the
 :func:`od_matrix` convenience function.
 """
 
+import geopandas as gpd
 import numpy as np
 import matplotlib.pyplot as plt
 
 from geoflowkit.visualization._utils import (
     _assign_zones,
-    _build_od_matrix,
+    _get_weights,
+    _linear_scaling,
+    _prepare_zones,
 )
 
 
@@ -23,16 +26,35 @@ class ODMatrixVisualizer:
     axis, and zones with zero inflow are removed from the destination
     (column) axis.
 
+    When *dest_zones* is provided separately, the matrix may be
+    non-square (M origins × N destinations).
+
     Parameters
     ----------
-    zones : GeoDataFrame
-        Polygon geometries defining the spatial zones.  Must contain a
-        column that uniquely identifies each zone (see *zone_id_col*).
+    zones : GeoDataFrame, optional
+        Polygon geometries defining the spatial zones.  Used as a
+        backward-compatible alias when *origin_zones* is not given.
+        Must contain a column that uniquely identifies each zone
+        (see *zone_id_col*).
+    origin_zones : GeoDataFrame, keyword-only, optional
+        Zone polygons for the origin (row) axis.  Takes precedence
+        over *zones*.
+    dest_zones : GeoDataFrame, keyword-only, optional
+        Zone polygons for the destination (column) axis.  When
+        ``None`` (default) the same zones are used for both axes.
     zone_id_col : str, optional
-        Column in *zones* to use as the zone identifier.  ``None``
-        (default) uses the GeoDataFrame index.
+        Column in *origin_zones* (or *zones*) to use as the zone
+        identifier.  ``None`` uses the GeoDataFrame index.
+    dest_zone_id_col : str, optional
+        Column in *dest_zones* for zone identifier.  ``None`` uses
+        *zone_id_col*.
     weight : str, default='count'
-        Aggregation weight: ``'count'``, ``'volume'``, or ``'length'``.
+        Aggregation weight: ``'count'``, ``'length'``,
+        ``'divergence'``, or ``'volume'``.
+    size_weight : str, optional
+        When set, overlay proportional circles whose area reflects
+        this metric (same options as *weight*).  Color remains
+        controlled by *weight*.
     cmap : str or Colormap, default='OrRd'
         Colormap for the heatmap.
     vmin, vmax : float, optional
@@ -44,13 +66,17 @@ class ODMatrixVisualizer:
     include_self_flows : bool, default=True
         Whether to include flows where the origin and destination zone
         are the same (diagonal entries).  When ``False`` the diagonal
-        is zeroed out.
+        is zeroed out.  Only effective when both axes use the same
+        zone set.
 
     Attributes
     ----------
     matrix_ : np.ndarray
         The ``(n_origin_zones, n_dest_zones)`` OD matrix (set after
         :meth:`fit`).
+    size_matrix_ : np.ndarray or None
+        Size values for each cell (same shape as *matrix_*), or
+        ``None`` when *size_weight* is not set.
     o_ids_ : np.ndarray
         Zone IDs for origin (row) axis, including only zones with
         nonzero outflow.
@@ -73,13 +99,39 @@ class ODMatrixVisualizer:
            Intelligent Information Systems, 27(3), 243-266.
     """
 
-    def __init__(self, zones, zone_id_col=None, weight='count',
-                 cmap='OrRd', vmin=None, vmax=None,
-                 show_labels=True, label_fontsize=10,
-                 include_self_flows=True):
-        self.zones = zones
+    def __init__(
+        self,
+        zones: gpd.GeoDataFrame | None = None,
+        *,
+        origin_zones: gpd.GeoDataFrame | None = None,
+        dest_zones: gpd.GeoDataFrame | None = None,
+        zone_id_col: str | None = None,
+        dest_zone_id_col: str | None = None,
+        weight: str = 'count',
+        size_weight: str | None = None,
+        cmap: str | plt.Colormap = 'OrRd',
+        vmin: float | None = None,
+        vmax: float | None = None,
+        show_labels: bool = True,
+        label_fontsize: int = 10,
+        include_self_flows: bool = True,
+    ):
+        if origin_zones is not None:
+            self.origin_zones = origin_zones
+        elif zones is not None:
+            self.origin_zones = zones
+        else:
+            raise TypeError(
+                "Either 'zones' or 'origin_zones' must be provided."
+            )
+
+        self.dest_zones = dest_zones if dest_zones is not None else self.origin_zones
+        self._asymmetric = self.dest_zones is not self.origin_zones
         self.zone_id_col = zone_id_col
+        self.dest_zone_id_col = dest_zone_id_col if dest_zone_id_col is not None else zone_id_col
+
         self.weight = weight
+        self.size_weight = size_weight
         self.cmap = cmap
         self.vmin = vmin
         self.vmax = vmax
@@ -87,8 +139,8 @@ class ODMatrixVisualizer:
         self.label_fontsize = label_fontsize
         self.include_self_flows = include_self_flows
 
-        # Fit-time attributes
         self.matrix_ = None
+        self.size_matrix_ = None
         self.o_ids_ = None
         self.d_ids_ = None
         self.zone_centroids_ = None
@@ -96,6 +148,10 @@ class ODMatrixVisualizer:
         self.d_zones_ = None
         self._outflows = None
         self._inflows = None
+        self._raw_matrix = None
+        self._raw_size_matrix = None
+        self._o_all_ids = None
+        self._d_all_ids = None
 
     # ------------------------------------------------------------------
     # Fit
@@ -115,62 +171,78 @@ class ODMatrixVisualizer:
             Fitted visualizer.
         """
         self.o_zones_, self.d_zones_, self.zone_centroids_ = _assign_zones(
-            fdf, self.zones, zone_id_col=self.zone_id_col,
+            fdf, self.origin_zones, zone_id_col=self.zone_id_col,
+            dest_zones=None if not self._asymmetric else self.dest_zones,
+            dest_zone_id_col=None if not self._asymmetric else self.dest_zone_id_col,
         )
 
-        # All zone IDs from the GeoDataFrame (includes zones with 0 flows)
-        all_zone_ids = list(self.zone_centroids_.keys())
-        n_all = len(all_zone_ids)
+        if self._asymmetric:
+            o_prepared = _prepare_zones(self.origin_zones, zone_id_col=self.zone_id_col)
+            d_prepared = _prepare_zones(self.dest_zones, zone_id_col=self.dest_zone_id_col)
+            o_all_ids = o_prepared['zone_id'].tolist()
+            d_all_ids = d_prepared['zone_id'].tolist()
+        else:
+            o_all_ids = list(self.zone_centroids_.keys())
+            d_all_ids = o_all_ids
 
-        # Build raw OD matrix (only zones with at least one flow)
-        raw_matrix, raw_zone_ids = _build_od_matrix(
-            fdf, self.o_zones_, self.d_zones_, weight=self.weight,
-        )
+        self._o_all_ids = o_all_ids
+        self._d_all_ids = d_all_ids
 
-        # Expand to full N×N matrix (zero-pad for zones with no flows)
-        full_matrix = np.zeros((n_all, n_all))
-        raw_idx = {z: i for i, z in enumerate(raw_zone_ids)}
-        for ri, rz in enumerate(all_zone_ids):
-            for ci, cz in enumerate(all_zone_ids):
-                if rz in raw_idx and cz in raw_idx:
-                    full_matrix[ri, ci] = raw_matrix[raw_idx[rz], raw_idx[cz]]
+        w_values = _get_weights(fdf, self.weight)
+        if self.size_weight is not None:
+            size_values = _get_weights(fdf, self.size_weight)
+        else:
+            size_values = None
 
-        # Optionally zero out diagonal (self-flows).
-        if not self.include_self_flows:
+        o_to_idx = {z: i for i, z in enumerate(o_all_ids)}
+        d_to_idx = {z: i for i, z in enumerate(d_all_ids)}
+        full_matrix = np.zeros((len(o_all_ids), len(d_all_ids)))
+        if size_values is not None:
+            size_matrix = np.zeros((len(o_all_ids), len(d_all_ids)))
+
+        for i in range(len(fdf)):
+            oz = self.o_zones_[i]
+            dz = self.d_zones_[i]
+            if oz in o_to_idx and dz in d_to_idx:
+                oi = o_to_idx[oz]
+                di = d_to_idx[dz]
+                full_matrix[oi, di] += w_values[i]
+                if size_values is not None:
+                    size_matrix[oi, di] += size_values[i]
+
+        if not self.include_self_flows and not self._asymmetric:
             np.fill_diagonal(full_matrix, 0.0)
 
-        # Compute per-zone outflow / inflow.
-        if self.weight == 'volume' and 'volume' in fdf.columns:
-            w_values = fdf['volume'].values
-        elif self.weight == 'length':
-            w_values = fdf.length.values
-        else:
-            w_values = np.ones(len(fdf))
+        self._raw_matrix = full_matrix
+        self._raw_size_matrix = size_matrix if size_values is not None else None
 
-        self._outflows = {z: 0.0 for z in all_zone_ids}
-        self._inflows = {z: 0.0 for z in all_zone_ids}
+        self._outflows = {z: 0.0 for z in o_all_ids}
+        self._inflows = {z: 0.0 for z in d_all_ids}
         for i in range(len(fdf)):
-            self._outflows[self.o_zones_[i]] += w_values[i]
-            self._inflows[self.d_zones_[i]] += w_values[i]
+            oz = self.o_zones_[i]
+            dz = self.d_zones_[i]
+            if oz in self._outflows:
+                self._outflows[oz] += w_values[i]
+            if dz in self._inflows:
+                self._inflows[dz] += w_values[i]
 
-        # Exclude zones with zero outflow from rows and zero inflow from
-        # columns.  At least one zone is kept in each axis when non-empty.
-        o_ids = [z for z in all_zone_ids if self._outflows[z] > 0]
-        d_ids = [z for z in all_zone_ids if self._inflows[z] > 0]
-        if not o_ids and all_zone_ids:
-            o_ids = all_zone_ids
-        if not d_ids and all_zone_ids:
-            d_ids = all_zone_ids
+        o_ids = [z for z in o_all_ids if self._outflows[z] > 0]
+        d_ids = [z for z in d_all_ids if self._inflows[z] > 0]
+        if not o_ids and o_all_ids:
+            o_ids = o_all_ids
+        if not d_ids and d_all_ids:
+            d_ids = d_all_ids
 
         self.o_ids_ = np.array(o_ids)
         self.d_ids_ = np.array(d_ids)
 
-        # Map original all-zone indices to filtered row / column indices.
-        all_idx = {z: i for i, z in enumerate(all_zone_ids)}
-        o_pos = [all_idx[z] for z in o_ids]
-        d_pos = [all_idx[z] for z in d_ids]
-
+        o_pos = [o_to_idx[z] for z in o_ids]
+        d_pos = [d_to_idx[z] for z in d_ids]
         self.matrix_ = full_matrix[np.ix_(o_pos, d_pos)]
+        self.size_matrix_ = (
+            size_matrix[np.ix_(o_pos, d_pos)]
+            if self._raw_size_matrix is not None else None
+        )
         return self
 
     # ------------------------------------------------------------------
@@ -215,6 +287,24 @@ class ODMatrixVisualizer:
             interpolation='nearest',
             aspect='auto',
         )
+
+        # --- size circles ---
+        if self.size_matrix_ is not None:
+            ny, nx = self.matrix_.shape
+            j_idx, i_idx = np.meshgrid(np.arange(nx), np.arange(ny))
+            xs = j_idx.ravel()
+            ys = (ny - 1 - i_idx).ravel()
+            sizes = self.size_matrix_.ravel()
+            vals = self.matrix_.ravel()
+            mask = ~np.isnan(vals) & (vals != 0)
+            xs, ys, sizes = xs[mask], ys[mask], sizes[mask]
+            if len(sizes) > 0:
+                if np.ptp(sizes) > 0:
+                    scaled = _linear_scaling(sizes, (20, 800))
+                else:
+                    scaled = np.full_like(sizes, 200.0)
+                ax.scatter(xs, ys, s=scaled, facecolors='none',
+                           edgecolors='gray', linewidths=0.5, alpha=0.7, zorder=5)
 
         # --- axis labels ---
         if self.show_labels:
@@ -263,61 +353,4 @@ class ODMatrixVisualizer:
         return self.plot(ax=ax, figsize=figsize, colorbar=colorbar)
 
 
-# ---------------------------------------------------------------------------
-# Convenience function
-# ---------------------------------------------------------------------------
 
-def od_matrix(fdf, zones, zone_id_col=None, weight='count',
-              cmap='OrRd', vmin=None, vmax=None,
-              show_labels=True, label_fontsize=10,
-              include_self_flows=True,
-              ax=None, figsize=None, colorbar=True):
-    """Build and display an OD matrix heatmap for flow data.
-
-    This is a convenience wrapper around :class:`ODMatrixVisualizer`.
-
-    Parameters
-    ----------
-    fdf : FlowDataFrame
-        Input flow data.
-    zones : GeoDataFrame
-        Zone polygon geometries.
-    zone_id_col : str, default='zone_id'
-        Column in *zones* identifying each zone.
-    weight : str, default='count'
-        ``'count'``, ``'volume'``, or ``'length'``.
-    cmap : str or Colormap, default='OrRd'
-        Heatmap colormap.
-    vmin, vmax : float, optional
-        Colormap range.
-    show_labels : bool, default=True
-        Show zone ID axis labels.
-    label_fontsize : int, default=10
-        Font size for labels.
-    include_self_flows : bool, default=True
-        Include flows where origin and destination zones are the same.
-        When ``False`` the matrix diagonal is zeroed out.
-    ax : matplotlib.axes.Axes, optional
-        Axes to draw on.
-    figsize : tuple, optional
-        Figure size when *ax* is ``None``.
-    colorbar : bool, default=True
-        Add a colour bar.
-
-    Returns
-    -------
-    ax : matplotlib.axes.Axes
-        Axes containing the heatmap.
-    """
-    vis = ODMatrixVisualizer(
-        zones=zones,
-        zone_id_col=zone_id_col,
-        weight=weight,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        show_labels=show_labels,
-        label_fontsize=label_fontsize,
-        include_self_flows=include_self_flows,
-    )
-    return vis.fit_plot(fdf, ax=ax, figsize=figsize, colorbar=colorbar)

@@ -123,7 +123,7 @@ def _assign_zones_custom(fdf, zone_func):
     return zone_func(fdf)
 
 
-def _assign_zones_gdf(fdf, zones):
+def _assign_zones_gdf(fdf, zones, dest_zones=None):
     """Assign zones using an external GeoDataFrame of zone polygons.
 
     Parameters
@@ -131,7 +131,10 @@ def _assign_zones_gdf(fdf, zones):
     fdf : FlowDataFrame
         Input flow data.
     zones : gpd.GeoDataFrame
-        Zone polygons with a 'zone_id' column.
+        Zone polygons for origin assignment, with a 'zone_id' column.
+    dest_zones : gpd.GeoDataFrame, optional
+        Zone polygons for destination assignment.  ``None`` (default)
+        reuses *zones* (symmetric case).
 
     Returns
     -------
@@ -140,22 +143,26 @@ def _assign_zones_gdf(fdf, zones):
     d_zones : np.ndarray
         Destination zone IDs for each flow.
     zone_centroids : dict
-        Mapping from zone ID to (x, y) centroid.
+        Mapping from zone ID to ``(x, y)`` centroid.
     """
+    if dest_zones is None:
+        dest_zones = zones
+
     if fdf.crs != zones.crs:
         zones = zones.to_crs(fdf.crs)
+    if fdf.crs != dest_zones.crs:
+        dest_zones = dest_zones.to_crs(fdf.crs)
 
     if 'zone_id' not in zones.columns:
         raise ValueError("zones GeoDataFrame must have a 'zone_id' column")
+    if 'zone_id' not in dest_zones.columns:
+        raise ValueError("dest_zones GeoDataFrame must have a 'zone_id' column")
 
-    origins = fdf.o
-    destinations = fdf.d
-
-    o_gdf = gpd.GeoDataFrame(geometry=origins, crs=fdf.crs)
-    d_gdf = gpd.GeoDataFrame(geometry=destinations, crs=fdf.crs)
+    o_gdf = gpd.GeoDataFrame(geometry=fdf.o, crs=fdf.crs)
+    d_gdf = gpd.GeoDataFrame(geometry=fdf.d, crs=fdf.crs)
 
     o_joined = gpd.sjoin(o_gdf, zones[['zone_id', 'geometry']], how='inner', predicate='within')
-    d_joined = gpd.sjoin(d_gdf, zones[['zone_id', 'geometry']], how='inner', predicate='within')
+    d_joined = gpd.sjoin(d_gdf, dest_zones[['zone_id', 'geometry']], how='inner', predicate='within')
 
     o_zones = o_joined['zone_id'].values
     d_zones = d_joined['zone_id'].values
@@ -171,6 +178,11 @@ def _assign_zones_gdf(fdf, zones):
         zid = row['zone_id']
         centroid = row['geometry'].centroid
         zone_centroids[zid] = (centroid.x, centroid.y)
+    for _, row in dest_zones.iterrows():
+        zid = row['zone_id']
+        if zid not in zone_centroids:
+            centroid = row['geometry'].centroid
+            zone_centroids[zid] = (centroid.x, centroid.y)
 
     return o_zones, d_zones, zone_centroids
 

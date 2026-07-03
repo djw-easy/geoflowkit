@@ -48,7 +48,8 @@ def _prepare_zones(zones, zone_id_col=None):
     return zones
 
 
-def _assign_zones(fdf, zones, zone_id_col=None):
+def _assign_zones(fdf, zones, zone_id_col=None,
+                  dest_zones=None, dest_zone_id_col=None):
     """Assign each flow to an origin and destination zone.
 
     Parameters
@@ -56,9 +57,15 @@ def _assign_zones(fdf, zones, zone_id_col=None):
     fdf : FlowDataFrame
         Input flow data.
     zones : GeoDataFrame
-        Zone polygons.  Must have a column (or index) identifying each zone.
+        Zone polygons for origin assignment.
     zone_id_col : str, optional
         Column to use as the zone identifier.  ``None`` uses the index.
+    dest_zones : GeoDataFrame, optional
+        Zone polygons for destination assignment.  ``None`` (default)
+        reuses *zones* (symmetric case).
+    dest_zone_id_col : str, optional
+        Column in *dest_zones* for zone identifier.  ``None`` uses
+        *zone_id_col*.
 
     Returns
     -------
@@ -69,8 +76,12 @@ def _assign_zones(fdf, zones, zone_id_col=None):
     zone_centroids : dict
         Mapping from zone ID to ``(x, y)`` centroid.
     """
-    zones = _prepare_zones(zones, zone_id_col=zone_id_col)
-    return _assign_zones_gdf(fdf, zones)
+    zones_prepared = _prepare_zones(zones, zone_id_col=zone_id_col)
+    if dest_zones is not None:
+        d_zone_id_col = dest_zone_id_col if dest_zone_id_col is not None else zone_id_col
+        dest_prepared = _prepare_zones(dest_zones, zone_id_col=d_zone_id_col)
+        return _assign_zones_gdf(fdf, zones_prepared, dest_zones=dest_prepared)
+    return _assign_zones_gdf(fdf, zones_prepared)
 
 
 def _compute_representative_points(zones, zone_id_col=None):
@@ -105,6 +116,35 @@ def _compute_representative_points(zones, zone_id_col=None):
 # OD matrix construction
 # ---------------------------------------------------------------------------
 
+def _get_weights(fdf, weight='count'):
+    """Compute per-flow weight values based on the chosen metric.
+
+    Parameters
+    ----------
+    fdf : FlowDataFrame
+        Input flow data.
+    weight : str, default='count'
+        Aggregation weight:
+        - ``'count'`` — unit weight (each flow counts as 1)
+        - ``'length'`` — flow length (Euclidean distance)
+        - ``'divergence'`` — flow angle in radians
+        - ``'volume'`` — numeric ``'volume'`` column (falls back to 1
+          when the column does not exist)
+
+    Returns
+    -------
+    w_values : np.ndarray
+        Per-flow weight array, same length as *fdf*.
+    """
+    if weight == 'length':
+        return fdf.length.values
+    if weight == 'divergence':
+        return fdf.angle.values
+    if weight == 'volume' and 'volume' in fdf.columns:
+        return fdf['volume'].values
+    return np.ones(len(fdf))
+
+
 def _build_od_matrix(fdf, o_zones, d_zones, weight='count'):
     """Aggregate flows into an origin-destination matrix.
 
@@ -117,11 +157,7 @@ def _build_od_matrix(fdf, o_zones, d_zones, weight='count'):
     d_zones : np.ndarray
         Destination zone ID for each flow.
     weight : str, default='count'
-        Aggregation weight:
-        - ``'count'``: Count of flows between zones
-        - ``'length'``: Sum of flow lengths between zones
-        - ``'divergence'``: Sum of flow angles (radians) between zones
-        - ``'entropy'``: Count of flows between zones
+        Aggregation weight (see :func:`_get_weights`).
 
     Returns
     -------
@@ -130,17 +166,11 @@ def _build_od_matrix(fdf, o_zones, d_zones, weight='count'):
     zone_ids : np.ndarray
         Sorted array of zone IDs (row / column index).
     """
+    w_values = _get_weights(fdf, weight)
     all_zones = sorted(set(o_zones) | set(d_zones))
     zone_ids = np.array(all_zones)
     zone_to_idx = {z: i for i, z in enumerate(zone_ids)}
     n = len(zone_ids)
-
-    if weight == 'length':
-        w_values = fdf.length.values
-    elif weight == 'divergence':
-        w_values = fdf.angle.values
-    else:
-        w_values = np.ones(len(fdf))
 
     matrix = np.zeros((n, n))
     for i in range(len(fdf)):
@@ -215,7 +245,7 @@ def _rotate_matrix(ax, matrix, cmap='OrRd', vmin=None, vmax=None):
     transform = (
         Affine2D()
         .translate(-center_x, -center_y)
-        .rotate_deg(45)
+        .rotate_deg(-45)
         .translate(center_x, center_y)
     )
 
@@ -230,7 +260,7 @@ def _rotate_matrix(ax, matrix, cmap='OrRd', vmin=None, vmax=None):
     )
 
     # Compute rotated bounding box and set axis limits
-    theta = np.radians(45)
+    theta = np.radians(-45)
     rot_mat = np.array([
         [np.cos(theta), -np.sin(theta)],
         [np.sin(theta),  np.cos(theta)],
@@ -332,11 +362,15 @@ def _calculate_matrix_anchor_point(transform, n_rows, n_cols, side, index):
         Number of matrix rows.
     n_cols : int
         Number of matrix columns.
-    side : {'top', 'left'}
+    side : {'top', 'bottom', 'left'}
         Matrix edge used by MapTrix guide lines.
 
-        - ``'top'``: origin anchors, one anchor per matrix column.
-        - ``'left'``: destination anchors, one anchor per matrix row.
+        - ``'top'``: anchors on the upper edge of the unrotated matrix
+          (upper-right diamond edge with CW rotation).
+        - ``'bottom'``: anchors on the lower edge of the unrotated matrix
+          (lower-left diamond edge with CW rotation), used for destination.
+        - ``'left'``: anchors on the left edge of the unrotated matrix
+          (upper-left diamond edge with CW rotation), used for origin.
 
     index : int
         Column index for ``side='top'`` or row index for ``side='left'``.
@@ -364,23 +398,19 @@ def _calculate_matrix_anchor_point(transform, n_rows, n_cols, side, index):
     ``_rotate_matrix``.
     """
     if side == "top":
-        if not (0 <= index < n_cols):
-            raise IndexError(
-                f"top anchor index {index} out of range for n_cols={n_cols}"
-            )
         x = index + 0.5
         y = n_rows
 
+    elif side == "bottom":
+        x = index + 0.5
+        y = 0.0
+
     elif side == "left":
-        if not (0 <= index < n_rows):
-            raise IndexError(
-                f"left anchor index {index} out of range for n_rows={n_rows}"
-            )
         x = 0.0
         y = n_rows - index - 0.5
 
     else:
-        raise ValueError("side must be either 'top' or 'left'")
+        raise ValueError("side must be 'top', 'bottom', or 'left'")
 
     point = transform.transform_point((x, y))
     return point[0], point[1]

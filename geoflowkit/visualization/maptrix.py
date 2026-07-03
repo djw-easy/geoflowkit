@@ -12,38 +12,52 @@ References
    Science, 31(4), 710–733.
 """
 
+import geopandas as gpd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from shapely.geometry import Point
 
+from geoflowkit.visualization.od_matrix import ODMatrixVisualizer
 from geoflowkit.visualization._utils import (
-    _assign_zones,
-    _build_od_matrix,
     _rotate_matrix,
     _calculate_matrix_anchor_point,
+    _calculate_rotated_point,
     _ax_to_fig,
-    _fig_to_ax,
     _linear_scaling,
     _plot_centroids,
     _plot_labels,
     _compute_representative_points,
     _prepare_zones,
 )
-from geoflowkit.visualization._gp_optimizer import GPLayoutOptimizer
 
 class MapTrixVisualizer:
     """MapTrix layout: origin/destination maps + rotated OD matrix + guide lines.
 
     Parameters
     ----------
-    zones : GeoDataFrame
-        Polygon geometries defining the spatial zones.
+    zones : GeoDataFrame, optional
+        Polygon geometries defining the spatial zones.  Used as a
+        backward-compatible alias when *origin_zones* is not given.
+    origin_zones : GeoDataFrame, keyword-only, optional
+        Zone polygons for the origin map.  Takes precedence over
+        *zones*.
+    dest_zones : GeoDataFrame, keyword-only, optional
+        Zone polygons for the destination map.  When ``None`` (default)
+        the same zones are used for both maps.
     zone_id_col : str, optional
-        Column in *zones* used as the zone identifier.  ``None`` uses
-        the GeoDataFrame index.
+        Column in *origin_zones* (or *zones*) used as the zone
+        identifier.  ``None`` uses the GeoDataFrame index.
+    dest_zone_id_col : str, optional
+        Column in *dest_zones* for zone identifier.  ``None`` uses
+        *zone_id_col*.
     weight : str, default='count'
         Aggregation weight: ``'count'``, ``'length'``,
-        ``'divergence'``, or ``'entropy'``.
+        ``'divergence'``, or ``'volume'``.
+    size_weight : str, optional
+        When set, overlay proportional circles whose area reflects
+        this metric (same options as *weight*).  Color remains
+        controlled by *weight*.
     matrix_cmap : str or Colormap, default='OrRd'
         Colormap for the OD matrix heatmap.
     vmin, vmax : float, optional
@@ -68,49 +82,64 @@ class MapTrixVisualizer:
         Font size for map titles.
     include_self_flows : bool, default=True
         Include flows where origin == destination (matrix diagonal).
-        When ``False`` the diagonal is zeroed.
-    leader_sep_weight : float, default=8.0
-        DP weight for uniform guide-line spacing.
-    leader_center_weight : float, default=1.0
-        DP penalty for moving connection points from the original centroid.
-    leader_min_c_gap : float, default=0.003
-        Minimum gap between neighbouring characteristic values *C*.
-    leader_max_candidates : int, default=45
-        Max candidate points per zone during polygon sampling.
-    leader_split_candidates : int, default=25
-        Number of candidate split-line positions to enumerate during
-        joint layout optimisation.
-    leader_split_balance_weight : float, default=0.05
-        Penalty weight for unbalanced split-lines (ratio of upper/lower
-        zone counts) in layout scoring.
-    show_split_lines : bool, default=False
-        Draw horizontal split lines on the maps.
+        When ``False`` the diagonal is zeroed.  Only effective when
+        both axes use the same zone set.
 
     Attributes
     ----------
     matrix_ : np.ndarray
         OD matrix after :meth:`fit`.
+    size_matrix_ : np.ndarray or None
+        Size values per cell, or ``None`` when *size_weight* is not set.
     zone_ids_ : np.ndarray
         All zone IDs.
     zone_centroids_ : dict
         Mapping zone ID → ``(x, y)`` representative point.
     o_order_, d_order_ : list
         Zone ordering for origin columns / destination rows.
-    origin_split_y_, dest_split_y_ : float or None
-        Split-line y (figure coords); set during ordering optimisation.
     """
 
-    def __init__(self, zones, zone_id_col=None, weight='count',
-                 matrix_cmap='OrRd', vmin=None, vmax=None,
-                 map_cmap=None, max_centroid_size=300.0,
-                 line_color='black', line_alpha=0.6,
-                 show_labels=True, label_fontsize=10,
-                 out_title='Outflow', in_title='Inflow',
-                 title_fontsize=16, include_self_flows=True,
-                 spacing_weight=8.0, center_weight=1.0):
-        self.zones = zones
+    def __init__(
+        self,
+        zones: gpd.GeoDataFrame | None = None,
+        *,
+        origin_zones: gpd.GeoDataFrame | None = None,
+        dest_zones: gpd.GeoDataFrame | None = None,
+        zone_id_col: str | None = None,
+        dest_zone_id_col: str | None = None,
+        weight: str = 'count',
+        size_weight: str | None = None,
+        matrix_cmap: str | plt.Colormap = 'OrRd',
+        vmin: float | None = None,
+        vmax: float | None = None,
+        map_cmap: str | plt.Colormap | None = None,
+        max_centroid_size: float = 300.0,
+        line_color: str = 'black',
+        line_alpha: float = 0.6,
+        show_labels: bool = True,
+        label_fontsize: int = 10,
+        out_title: str = 'Outflow',
+        in_title: str = 'Inflow',
+        title_fontsize: int = 16,
+        include_self_flows: bool = True,
+    ):
+        self._matrix_vis = ODMatrixVisualizer(
+            zones=zones, origin_zones=origin_zones, dest_zones=dest_zones,
+            zone_id_col=zone_id_col, dest_zone_id_col=dest_zone_id_col,
+            weight=weight, size_weight=size_weight,
+            cmap=matrix_cmap, vmin=vmin, vmax=vmax,
+            show_labels=show_labels, label_fontsize=label_fontsize,
+            include_self_flows=include_self_flows,
+        )
+
+        # convenience references
+        self.origin_zones = self._matrix_vis.origin_zones
+        self.dest_zones = self._matrix_vis.dest_zones
+        self._asymmetric = self._matrix_vis._asymmetric
         self.zone_id_col = zone_id_col
+        self.dest_zone_id_col = dest_zone_id_col if dest_zone_id_col is not None else zone_id_col
         self.weight = weight
+        self.size_weight = size_weight
         self.matrix_cmap = matrix_cmap
         self.vmin = vmin
         self.vmax = vmax
@@ -127,7 +156,9 @@ class MapTrixVisualizer:
 
         # fit-time
         self.matrix_ = None
+        self.size_matrix_ = None
         self._full_matrix = None
+        self._full_size_matrix = None
         self.zone_ids_ = None
         self.zone_centroids_ = None
         self.o_zones_ = None
@@ -138,7 +169,11 @@ class MapTrixVisualizer:
         self.d_order_ = None
         self._bounds = None
         self._zone_to_idx = None
-        self._zone_geometries_ = None
+        self._d_zone_to_idx = None
+        self._o_zone_geometries_ = None
+        self._d_zone_geometries_ = None
+        self._o_all_ids = None
+        self._d_all_ids = None
 
         # plot-time
         self._im = None
@@ -148,76 +183,85 @@ class MapTrixVisualizer:
         self._o_labels = []
         self._d_labels = []
 
-        # GP result cache (populated by plot() when use_gp=True)
-        self._gp_origin_result = None
-        self._gp_dest_result = None
-
-        # guide-line geometry
-        self._angle_deg = 45.0
-        self._spacing_weight = spacing_weight
-        self._center_weight = center_weight
-
     # ==================================================================
     # Fit
     # ==================================================================
 
     def fit(self, fdf):
         """Aggregate flows and prepare layout."""
-        # Zone assignment
-        self.o_zones_, self.d_zones_, self.zone_centroids_ = _assign_zones(
-            fdf, self.zones, zone_id_col=self.zone_id_col,
+        self._matrix_vis.fit(fdf)
+
+        # copy computed data
+        self.o_zones_ = self._matrix_vis.o_zones_
+        self.d_zones_ = self._matrix_vis.d_zones_
+        self.zone_centroids_ = dict(self._matrix_vis.zone_centroids_)
+        self._outflows = dict(self._matrix_vis._outflows)
+        self._inflows = dict(self._matrix_vis._inflows)
+        self._full_matrix = self._matrix_vis._raw_matrix.copy()
+        self._full_size_matrix = (
+            self._matrix_vis._raw_size_matrix.copy()
+            if self._matrix_vis._raw_size_matrix is not None else None
         )
+        o_all_ids = list(self._matrix_vis._o_all_ids)
+        d_all_ids = list(self._matrix_vis._d_all_ids)
+        self._o_all_ids = o_all_ids
+        self._d_all_ids = d_all_ids
+
+        # NaN diagonal for MapTrix visual transparency
+        if not self.include_self_flows and not self._asymmetric:
+            np.fill_diagonal(self._full_matrix, np.nan)
+
+        # zone geometries
+        o_prepared = _prepare_zones(self.origin_zones, zone_id_col=self.zone_id_col)
+        self._o_zone_geometries_ = {
+            row["zone_id"]: row["geometry"]
+            for _, row in o_prepared.iterrows()
+        }
+        if self._asymmetric:
+            d_prepared = _prepare_zones(self.dest_zones, zone_id_col=self.dest_zone_id_col)
+            self._d_zone_geometries_ = {
+                row["zone_id"]: row["geometry"]
+                for _, row in d_prepared.iterrows()
+            }
+        else:
+            self._d_zone_geometries_ = self._o_zone_geometries_
+
+        # representative points
         rep_points = _compute_representative_points(
-            self.zones, zone_id_col=self.zone_id_col,
+            self.origin_zones, zone_id_col=self.zone_id_col,
         )
+        if self._asymmetric:
+            rep_points.update(_compute_representative_points(
+                self.dest_zones, zone_id_col=self.dest_zone_id_col,
+            ))
         for zid in self.zone_centroids_:
             if zid in rep_points:
                 self.zone_centroids_[zid] = rep_points[zid]
 
-        zones_prepared = _prepare_zones(self.zones, zone_id_col=self.zone_id_col)
-        self._zone_geometries_ = {
-            row["zone_id"]: row["geometry"]
-            for _, row in zones_prepared.iterrows()
-        }
-
-        all_zone_ids = list(self.zone_centroids_.keys())
-        self.zone_ids_ = np.array(all_zone_ids)
-        self._zone_to_idx = {z: i for i, z in enumerate(all_zone_ids)}
-
-        # Build OD matrix
-        raw_matrix, raw_zone_ids = _build_od_matrix(
-            fdf, self.o_zones_, self.d_zones_, weight=self.weight,
+        # index maps
+        self.zone_ids_ = np.array(o_all_ids)
+        self._zone_to_idx = {z: i for i, z in enumerate(o_all_ids)}
+        self._d_zone_to_idx = (
+            {z: i for i, z in enumerate(d_all_ids)}
+            if self._asymmetric else self._zone_to_idx
         )
-        n_all = len(all_zone_ids)
-        full_matrix = np.zeros((n_all, n_all))
-        raw_idx = {z: i for i, z in enumerate(raw_zone_ids)}
-        for ri, rz in enumerate(all_zone_ids):
-            for ci, cz in enumerate(all_zone_ids):
-                if rz in raw_idx and cz in raw_idx:
-                    full_matrix[ri, ci] = raw_matrix[raw_idx[rz], raw_idx[cz]]
-        if not self.include_self_flows:
-            np.fill_diagonal(full_matrix, np.nan)
-        self._full_matrix = full_matrix
 
-        # Per-zone flows
-        if self.weight == 'length':
-            w_values = fdf.length.values
-        elif self.weight == 'divergence':
-            w_values = fdf.angle.values
-        else:
-            w_values = np.ones(len(fdf))
-        self._outflows = {z: 0.0 for z in all_zone_ids}
-        self._inflows = {z: 0.0 for z in all_zone_ids}
-        for i in range(len(fdf)):
-            self._outflows[self.o_zones_[i]] += w_values[i]
-            self._inflows[self.d_zones_[i]] += w_values[i]
-
-        # Initial ordering by centroid Y
+        # initial ordering by centroid Y
         centroids = self.zone_centroids_
-        self.o_order_ = sorted(all_zone_ids, key=lambda z: centroids[z][1])
-        self.d_order_ = sorted(all_zone_ids, key=lambda z: centroids[z][1])
+        if self._asymmetric:
+            self.o_order_ = sorted(
+                [z for z in o_all_ids if z in centroids],
+                key=lambda z: centroids[z][1],
+            )
+            self.d_order_ = sorted(
+                [z for z in d_all_ids if z in centroids],
+                key=lambda z: centroids[z][1],
+            )
+        else:
+            self.o_order_ = sorted(o_all_ids, key=lambda z: centroids[z][1])
+            self.d_order_ = sorted(o_all_ids, key=lambda z: centroids[z][1])
 
-        # Exclude zero-flow zones (keep at least one when non-empty)
+        # exclude zero-flow zones
         for attr, flow_dict in [('o_order_', self._outflows),
                                  ('d_order_', self._inflows)]:
             order = getattr(self, attr)
@@ -237,10 +281,13 @@ class MapTrixVisualizer:
         if self._full_matrix is None or self.o_order_ is None or self.d_order_ is None:
             return
         o_pos = [self._zone_to_idx[z] for z in self.o_order_]
-        d_pos = [self._zone_to_idx[z] for z in self.d_order_]
+        d_pos = [self._d_zone_to_idx[z] for z in self.d_order_]
         self.matrix_ = self._full_matrix[np.ix_(o_pos, d_pos)].T
-        # Re-apply NaN for self-flows based on actual zone ids
-        if not self.include_self_flows:
+        if self._full_size_matrix is not None:
+            self.size_matrix_ = self._full_size_matrix[np.ix_(o_pos, d_pos)].T
+        else:
+            self.size_matrix_ = None
+        if not self.include_self_flows and not self._asymmetric:
             for j, d_zid in enumerate(self.d_order_):
                 for i, o_zid in enumerate(self.o_order_):
                     if o_zid == d_zid:
@@ -257,7 +304,6 @@ class MapTrixVisualizer:
         if fig is None:
             fig = plt.figure(figsize=figsize)
 
-        # Build figure
         ax_map_o, ax_map_d, ax_matrix, im, transform = self._build_figure(fig)
         plt.subplots_adjust(hspace=0.01, wspace=-0.15, left=0.0001)
         self._im = im
@@ -265,121 +311,18 @@ class MapTrixVisualizer:
         self._draw_colorbar(fig, ax_matrix)
         fig.canvas.draw()
 
-        # GP layout optimisation
-        if len(self.o_order_) > 1 or len(self.d_order_) > 1:
-            ax_map_o, ax_map_d, ax_matrix = self._run_gp_optimisation(
-                fig, ax_map_o, ax_map_d, ax_matrix)
-
-        self._debug_draw_matrix_anchors(fig, ax_matrix)
-
-        # Draw GP guide lines
-        if self._gp_origin_result is not None:
-            self._draw_gp_guide_lines(fig, ax_map_o, ax_map_d)
+        self._draw_guide_lines(fig, ax_map_o, ax_map_d, ax_matrix)
+        self._draw_matrix_anchors(fig, ax_matrix)
         return fig
 
     def fit_plot(self, fdf, fig=None, figsize=(14, 8)):
         self.fit(fdf)
         return self.plot(fig=fig, figsize=figsize)
 
-    # ==================================================================
-    # GP optimisation
-    # ==================================================================
-
-    def _run_gp_optimisation(self, fig, ax_map_o, ax_map_d, ax_matrix):
-        """Run GP layout optimisation for both sides.
-
-        Runs GP using the *current* figure axes.  After optimisation the
-        ordering and matrix data are updated in-place on the existing
-        axes — the figure is **not** cleared or rebuilt, so all
-        figure-coordinate positions computed by GP remain valid.
-        """
+    def _draw_guide_lines(self, fig, ax_map_o, ax_map_d, ax_matrix):
+        """Draw straight guide lines from map centroids to matrix anchors."""
         n_rows, n_cols = self.matrix_.shape
-        transform = self._transform
 
-        # ---- Origin side ----
-        if len(self.o_order_) > 1:
-            origin_ids = list(self.o_order_)
-            origin_centroids_fig = {
-                z: _ax_to_fig(
-                    ax_map_o, fig, *self.zone_centroids_[z])
-                for z in origin_ids
-            }
-
-            gp_origin = GPLayoutOptimizer(
-                angle_deg=self._angle_deg,
-                center_weight=self._center_weight,
-                spacing_weight=self._spacing_weight,
-                random_state=42,
-            )
-            self._gp_origin_result = gp_origin.optimize(
-                zone_ids=origin_ids,
-                zone_geometries=self._zone_geometries_,
-                zone_centroids_fig=origin_centroids_fig,
-                ax_map=ax_map_o,
-                ax_matrix=ax_matrix,
-                fig=fig,
-                matrix_shape=(n_rows, n_cols),
-                transform=transform,
-                is_origin=True,
-            )
-            self.o_order_ = self._gp_origin_result["order"]
-        else:
-            self._gp_origin_result = None
-
-        # ---- Destination side ----
-        if len(self.d_order_) > 1:
-            dest_ids = list(self.d_order_)
-            dest_centroids_fig = {
-                z: _ax_to_fig(
-                    ax_map_d, fig, *self.zone_centroids_[z])
-                for z in dest_ids
-            }
-
-            gp_dest = GPLayoutOptimizer(
-                angle_deg=self._angle_deg,
-                center_weight=self._center_weight,
-                spacing_weight=self._spacing_weight,
-                random_state=42,
-            )
-            self._gp_dest_result = gp_dest.optimize(
-                zone_ids=dest_ids,
-                zone_geometries=self._zone_geometries_,
-                zone_centroids_fig=dest_centroids_fig,
-                ax_map=ax_map_d,
-                ax_matrix=ax_matrix,
-                fig=fig,
-                matrix_shape=(n_rows, n_cols),
-                transform=transform,
-                is_origin=False,
-            )
-            self.d_order_ = self._gp_dest_result["order"]
-        else:
-            self._gp_dest_result = None
-
-        # Reverse destination ordering so self-flow cells land on the
-        # anti-diagonal, which becomes vertical after 45° CCW rotation.
-        if self._gp_origin_result is not None and not self.include_self_flows:
-            self.d_order_ = list(reversed(self.o_order_))
-
-        # Apply ordering and update matrix *without* rebuilding figure.
-        # This keeps all figure-coordinate geoms from GP valid.
-        changed = (self._gp_origin_result is not None
-                   or self._gp_dest_result is not None)
-        if changed:
-            self._apply_ordering()
-            # Update the imshow data in-place (same axes, same transform)
-            if self._im is not None:
-                self._im.set_data(self.matrix_)
-            fig.canvas.draw()
-
-        return ax_map_o, ax_map_d, ax_matrix
-
-    def _draw_gp_guide_lines(self, fig, ax_map_o, ax_map_d):
-        """Draw guide lines directly from GP-optimised results."""
-        from geoflowkit.visualization._utils import (
-            _fig_to_ax, _linear_scaling, _plot_centroids, _plot_labels)
-
-        # Line-width scaling
         def _width_map(flow_dict):
             if not flow_dict:
                 return {}
@@ -390,30 +333,24 @@ class MapTrixVisualizer:
         outflow_w_map = _width_map(self._outflows)
         inflow_w_map = _width_map(self._inflows)
 
-        for side, result, ax, zid_order, flow_dict, scatter, labels, width_map in [
-            ('origin', self._gp_origin_result, ax_map_o,
-             self.o_order_, self._outflows,
-             '_o_scatter', '_o_labels', outflow_w_map),
-            ('dest', self._gp_dest_result, ax_map_d,
-             self.d_order_, self._inflows,
-             '_d_scatter', '_d_labels', inflow_w_map),
+        for side, ax_map, zid_order, flow_dict, width_map, matrix_side in [
+            ('origin', ax_map_o, self.o_order_, self._outflows, outflow_w_map, 'left'),
+            ('dest',   ax_map_d, self.d_order_, self._inflows,  inflow_w_map, 'bottom'),
         ]:
-            if result is None:
-                continue
-
-            positions = {}
-            for item in result['geoms']:
-                zid = item['zid']
-                geom = item['geom']
-                if geom is None:
+            for idx, zid in enumerate(zid_order):
+                if zid not in self.zone_centroids_:
                     continue
-                p_x, p_y = geom['p']
-                q_x, q_y = geom['q']
-                m_x, m_y = geom['m']
+
+                cx, cy = self.zone_centroids_[zid]
+                fig_cx, fig_cy = _ax_to_fig(ax_map, fig, cx, cy)
+
+                anchor_x, anchor_y = _calculate_matrix_anchor_point(
+                    self._transform, n_rows, n_cols, matrix_side, idx,
+                )
+                fig_ax, fig_ay = _ax_to_fig(ax_matrix, fig, anchor_x, anchor_y)
 
                 fig.add_artist(Line2D(
-                    [p_x, q_x, m_x],
-                    [p_y, q_y, m_y],
+                    [fig_cx, fig_ax], [fig_cy, fig_ay],
                     transform=fig.transFigure,
                     color=self.line_color,
                     linewidth=width_map.get(zid, 1.0),
@@ -422,22 +359,6 @@ class MapTrixVisualizer:
                     clip_on=False,
                     zorder=10,
                 ))
-
-                data_xy = _fig_to_ax(ax, fig, p_x, p_y)
-                positions[zid] = (data_xy[0], data_xy[1])
-
-            # Draw split line if available
-            split_y = result.get('split_y')
-            if split_y is not None:
-                box = ax.get_position()
-                fig.add_artist(Line2D(
-                    [box.x0, box.x1], [split_y, split_y],
-                    transform=fig.transFigure, color='0.75',
-                    linewidth=0.8, linestyle='--', alpha=0.8,
-                    clip_on=False, zorder=8))
-
-            self._redraw_centroids(
-                ax, positions, zid_order, flow_dict, scatter, labels)
 
     # ==================================================================
     # Figure construction
@@ -449,21 +370,23 @@ class MapTrixVisualizer:
         ax_map_d = fig.add_subplot(gs[1, 0])
         ax_matrix = fig.add_subplot(gs[:, 1])
         self._draw_map(ax_map_o, self.o_order_, self._outflows,
+                       self.origin_zones,
                        scatter='_o_scatter', labels='_o_labels')
         self._draw_map(ax_map_d, self.d_order_, self._inflows,
+                       self.dest_zones,
                        scatter='_d_scatter', labels='_d_labels')
         im, transform = self._draw_matrix(ax_matrix)
         self._draw_titles(ax_map_o, ax_map_d)
         return ax_map_o, ax_map_d, ax_matrix, im, transform
 
-    def _draw_map(self, ax, zid_order, flow_dict, scatter, labels):
+    def _draw_map(self, ax, zid_order, flow_dict, zones_gdf, scatter, labels):
         """Draw one map with zone boundaries, centroids, and labels."""
         centroids = {z: self.zone_centroids_[z] for z in zid_order}
         flows = np.array([flow_dict[z] for z in zid_order])
         sizes = self._scale_sizes(flows)
         colors = flows if np.ptp(flows) > 0 else 'k'
 
-        self._draw_map_base(ax)
+        self._draw_map_base(ax, zones_gdf)
         setattr(self, scatter, _plot_centroids(
             ax, centroids, sizes=sizes, colors=colors,
             cmap=self.map_cmap, vmin=self.vmin, vmax=self.vmax,
@@ -475,13 +398,15 @@ class MapTrixVisualizer:
                     _plot_labels(ax, centroids, lbls, fontsize=self.label_fontsize))
         ax.axis('off')
 
-    def _draw_map_base(self, ax):
-        if self.zones is not None:
-            self.zones.boundary.plot(
+    def _draw_map_base(self, ax, zones_gdf=None):
+        if zones_gdf is None:
+            zones_gdf = self.origin_zones
+        if zones_gdf is not None:
+            zones_gdf.boundary.plot(
                 ax=ax, edgecolor='gray', linewidth=0.5, facecolor='none',
             )
-        if self.zones is not None and len(self.zones) > 0:
-            mnx, mny, mxx, mxy = self.zones.total_bounds
+        if zones_gdf is not None and len(zones_gdf) > 0:
+            mnx, mny, mxx, mxy = zones_gdf.total_bounds
             padx = max((mxx - mnx) * 0.05, 0.01)
             pady = max((mxy - mny) * 0.05, 0.01)
             ax.set_xlim(mnx - padx, mxx + padx)
@@ -494,6 +419,32 @@ class MapTrixVisualizer:
             ax, self.matrix_,
             cmap=cmap, vmin=self.vmin, vmax=self.vmax,
         )
+
+        # size circles overlay
+        if self.size_matrix_ is not None:
+            n_rows, n_cols = self.matrix_.shape
+            cx_list, cy_list, sizes_list = [], [], []
+            for i in range(n_rows):
+                for j in range(n_cols):
+                    val = self.matrix_[i, j]
+                    if np.isnan(val) or val == 0:
+                        continue
+                    cx, cy = _calculate_rotated_point(
+                        transform, n_rows, i, j,
+                    )
+                    cx_list.append(cx)
+                    cy_list.append(cy)
+                    sizes_list.append(self.size_matrix_[i, j])
+            if sizes_list:
+                s_arr = np.array(sizes_list)
+                if np.ptp(s_arr) > 0:
+                    scaled = _linear_scaling(s_arr, (20, 800))
+                else:
+                    scaled = np.full_like(s_arr, 200.0)
+                ax.scatter(cx_list, cy_list, s=scaled,
+                           facecolors='none', edgecolors='gray',
+                           linewidths=0.5, alpha=0.7, zorder=5)
+
         for spine in ax.spines.values():
             spine.set_visible(False)
         return im, transform
@@ -504,6 +455,7 @@ class MapTrixVisualizer:
                         rotation=90, va='center', ha='right',
                         xytext=(15, 0), textcoords='offset points',
                         fontsize=self.title_fontsize, weight='bold')
+
     def _redraw_centroids(self, ax, positions, zid_order, flow_dict,
                           scatter, labels):
         """Remove old scatter/labels and redraw all centroids at final positions."""
@@ -527,10 +479,11 @@ class MapTrixVisualizer:
             setattr(self, labels, _plot_labels(
                 ax, positions, lbls, fontsize=self.label_fontsize,
             ))
+
     def _sample_zone_candidate_points(self, zid, ax_map, fig, grid_size=17):
-        if self._zone_geometries_ is None:
+        if self._o_zone_geometries_ is None:
             return []
-        geom = self._zone_geometries_.get(zid)
+        geom = self._o_zone_geometries_.get(zid)
         if geom is None or geom.is_empty:
             return []
         mnx, mny, mxx, mxy = geom.bounds
@@ -556,46 +509,41 @@ class MapTrixVisualizer:
                 seen.add(key)
                 unique.append((float(x), float(y)))
         return unique
-    def _debug_draw_matrix_anchors(self, fig, ax_matrix):
-        """Debug helper: draw matrix anchor points on top and left edges."""
+
+    def _draw_matrix_anchors(self, fig, ax_matrix):
+        """Debug helper: draw matrix anchor points for origin and destination."""
         if self._transform is None or self.matrix_ is None:
             return
 
         n_rows, n_cols = self.matrix_.shape
 
-        # origin anchors: top edge
-        top_xs, top_ys = [], []
-        for j in range(n_cols):
+        # origin anchors: left edge (upper-left diamond edge with CW rotation)
+        o_xs, o_ys = [], []
+        for idx in range(n_cols):
             x, y = _calculate_matrix_anchor_point(
-                self._transform, n_rows, n_cols, "top", j,
+                self._transform, n_rows, n_cols, "left", idx,
             )
-            top_xs.append(x)
-            top_ys.append(y)
+            o_xs.append(x)
+            o_ys.append(y)
 
-        # destination anchors: left edge
-        left_xs, left_ys = [], []
-        for i in range(n_rows):
+        # destination anchors: bottom edge (lower-left diamond edge with CW rotation)
+        d_xs, d_ys = [], []
+        for idx in range(n_rows):
             x, y = _calculate_matrix_anchor_point(
-                self._transform, n_rows, n_cols, "left", i,
+                self._transform, n_rows, n_cols, "bottom", idx,
             )
-            left_xs.append(x)
-            left_ys.append(y)
+            d_xs.append(x)
+            d_ys.append(y)
 
         ax_matrix.scatter(
-            top_xs, top_ys,
-            s=30,
-            c="cyan",
-            edgecolor="black",
-            zorder=20,
+            o_xs, o_ys,
+            s=30, c="cyan", edgecolor="black", zorder=20,
             label="origin anchors",
         )
 
         ax_matrix.scatter(
-            left_xs, left_ys,
-            s=30,
-            c="magenta",
-            edgecolor="black",
-            zorder=20,
+            d_xs, d_ys,
+            s=30, c="magenta", edgecolor="black", zorder=20,
             label="destination anchors",
         )
 
@@ -617,74 +565,4 @@ class MapTrixVisualizer:
         return _linear_scaling(values, (max(self.max_centroid_size / 10.0, 20.0),
                                         self.max_centroid_size))
 
-# ---------------------------------------------------------------------------
-# Convenience function
-# ---------------------------------------------------------------------------
 
-def maptrix(fdf, zones, zone_id_col=None, weight='count',
-            matrix_cmap='OrRd', vmin=None, vmax=None,
-            map_cmap=None, max_centroid_size=300.0,
-            line_color='black', line_alpha=0.6,
-            show_labels=True, label_fontsize=10,
-            out_title='Outflow', in_title='Inflow',
-            title_fontsize=16, include_self_flows=True,
-            spacing_weight=8.0, center_weight=1.0,
-            fig=None, figsize=(14, 8)):
-    """Create a MapTrix visualisation for flow data.
-
-    Parameters
-    ----------
-    fdf : FlowDataFrame
-        Input flow data.
-    zones : GeoDataFrame
-        Zone polygon geometries.
-    zone_id_col : str, optional
-        Zone identifier column.
-    weight : str, default='count'
-        ``'count'``, ``'length'``, ``'divergence'``, or ``'entropy'``.
-    matrix_cmap : str or Colormap, default='OrRd'
-        Matrix heatmap colormap.
-    vmin, vmax : float, optional
-        Colormap range.
-    map_cmap : str or Colormap, optional
-        Centroid circle colormap (defaults to *matrix_cmap*).
-    max_centroid_size : float, default=300.0
-        Max marker size.
-    line_color : str, default='black'
-        Guide line colour.
-    line_alpha : float, default=0.6
-        Guide line transparency.
-    show_labels : bool, default=True
-        Show zone ID labels.
-    label_fontsize : int, default=10
-        Label font size.
-    out_title : str, default='Outflow'
-        Origin map title.
-    in_title : str, default='Inflow'
-        Destination map title.
-    title_fontsize : int, default=16
-        Map title font size.
-    include_self_flows : bool, default=True
-        Include diagonal entries in the matrix.
-    spacing_weight : float, default=8.0
-        GP fitness weight for guide-line spacing uniformity.
-    center_weight : float, default=1.0
-        GP fitness weight for centroid deviation.
-    fig : matplotlib.figure.Figure, optional
-    figsize : tuple, default=(14, 8)
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-    """
-    vis = MapTrixVisualizer(
-        zones=zones, zone_id_col=zone_id_col, weight=weight,
-        matrix_cmap=matrix_cmap, vmin=vmin, vmax=vmax,
-        map_cmap=map_cmap, max_centroid_size=max_centroid_size,
-        line_color=line_color, line_alpha=line_alpha,
-        show_labels=show_labels, label_fontsize=label_fontsize,
-        out_title=out_title, in_title=in_title,
-        title_fontsize=title_fontsize, include_self_flows=include_self_flows,
-        spacing_weight=spacing_weight, center_weight=center_weight,
-    )
-    return vis.fit_plot(fdf, fig=fig, figsize=figsize)

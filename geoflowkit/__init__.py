@@ -23,7 +23,7 @@ from geoflowkit.clustering import (
 from geoflowkit.manifold import FTSNE
 
 from geoflowkit.visualization import (
-    od_matrix, ODMatrixVisualizer,
-    maptrix, MapTrixVisualizer,
+    ODMatrixVisualizer,
+    MapTrixVisualizer,
 )
 
