@@ -73,15 +73,31 @@ def _assign_zones(fdf, zones, zone_id_col=None,
         Origin zone ID for each flow.
     d_zones : np.ndarray
         Destination zone ID for each flow.
-    zone_centroids : dict
-        Mapping from zone ID to ``(x, y)`` centroid.
+    o_centroids : dict
+        Mapping from origin zone ID to ``(x, y)`` centroid.
+    d_centroids : dict
+        Mapping from destination zone ID to ``(x, y)`` centroid.
     """
     zones_prepared = _prepare_zones(zones, zone_id_col=zone_id_col)
+
+    o_centroids = {}
+    for _, row in zones_prepared.iterrows():
+        c = row['geometry'].centroid
+        o_centroids[row['zone_id']] = (c.x, c.y)
+
     if dest_zones is not None:
         d_zone_id_col = dest_zone_id_col if dest_zone_id_col is not None else zone_id_col
         dest_prepared = _prepare_zones(dest_zones, zone_id_col=d_zone_id_col)
-        return _assign_zones_gdf(fdf, zones_prepared, dest_zones=dest_prepared)
-    return _assign_zones_gdf(fdf, zones_prepared)
+        o_zones, d_zones, _ = _assign_zones_gdf(fdf, zones_prepared, dest_zones=dest_prepared)
+        d_centroids = {}
+        for _, row in dest_prepared.iterrows():
+            c = row['geometry'].centroid
+            d_centroids[row['zone_id']] = (c.x, c.y)
+    else:
+        o_zones, d_zones, _ = _assign_zones_gdf(fdf, zones_prepared)
+        d_centroids = o_centroids
+
+    return o_zones, d_zones, o_centroids, d_centroids
 
 
 def _compute_representative_points(zones, zone_id_col=None):
@@ -143,42 +159,6 @@ def _get_weights(fdf, weight='count'):
     if weight == 'volume' and 'volume' in fdf.columns:
         return fdf['volume'].values
     return np.ones(len(fdf))
-
-
-def _build_od_matrix(fdf, o_zones, d_zones, weight='count'):
-    """Aggregate flows into an origin-destination matrix.
-
-    Parameters
-    ----------
-    fdf : FlowDataFrame
-        Input flow data.
-    o_zones : np.ndarray
-        Origin zone ID for each flow.
-    d_zones : np.ndarray
-        Destination zone ID for each flow.
-    weight : str, default='count'
-        Aggregation weight (see :func:`_get_weights`).
-
-    Returns
-    -------
-    matrix : np.ndarray
-        Square ``(n_zones, n_zones)`` OD matrix.
-    zone_ids : np.ndarray
-        Sorted array of zone IDs (row / column index).
-    """
-    w_values = _get_weights(fdf, weight)
-    all_zones = sorted(set(o_zones) | set(d_zones))
-    zone_ids = np.array(all_zones)
-    zone_to_idx = {z: i for i, z in enumerate(zone_ids)}
-    n = len(zone_ids)
-
-    matrix = np.zeros((n, n))
-    for i in range(len(fdf)):
-        o_idx = zone_to_idx[o_zones[i]]
-        d_idx = zone_to_idx[d_zones[i]]
-        matrix[o_idx, d_idx] += w_values[i]
-
-    return matrix, zone_ids
 
 
 # ---------------------------------------------------------------------------
@@ -443,29 +423,32 @@ def _ax_to_fig(ax, fig, x, y):
     return fig_coords
 
 
-def _fig_to_ax(ax, fig, fig_x, fig_y):
-    """Convert normalised figure coordinates to data coordinates on *ax*.
+# ---------------------------------------------------------------------------
+# Proportional circles overlays
+# ---------------------------------------------------------------------------
 
-    Inverse of :func:`_ax_to_fig`.
+
+def _draw_size_overlay(ax, xs, ys, sizes):
+    """Draw proportional size circles at given display positions.
 
     Parameters
     ----------
     ax : matplotlib.axes.Axes
-        The target axes.
-    fig : matplotlib.figure.Figure
-        The source figure (must contain *ax*).
-    fig_x, fig_y : float
-        Coordinates in figure space (0–1 normalised).
-
-    Returns
-    -------
-    data_x : float
-    data_y : float
-        Data coordinates on *ax*.
+        Target axes.
+    xs, ys : array-like
+        Coordinates for each circle.
+    sizes : array-like
+        Raw size values (linearly scaled to 20-800 for display).
     """
-    display_coords = fig.transFigure.transform((fig_x, fig_y))
-    data_coords = ax.transData.inverted().transform(display_coords)
-    return data_coords
+    if len(sizes) == 0:
+        return
+    s_arr = np.asarray(sizes)
+    if np.ptp(s_arr) > 0:
+        scaled = _linear_scaling(s_arr, (20, 800))
+    else:
+        scaled = np.full_like(s_arr, 200.0)
+    ax.scatter(xs, ys, s=scaled, facecolors='none',
+               edgecolors='gray', linewidths=0.5, alpha=0.7, zorder=5)
 
 
 # ---------------------------------------------------------------------------

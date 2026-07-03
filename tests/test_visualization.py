@@ -14,7 +14,6 @@ from geoflowkit.flowdataframe import FlowDataFrame
 from geoflowkit.visualization._utils import (
     _prepare_zones,
     _assign_zones,
-    _build_od_matrix,
     _linear_scaling,
     _rotate_matrix,
     _calculate_rotated_point,
@@ -131,75 +130,21 @@ class TestAssignZones(unittest.TestCase):
         self.zones = _make_zone_gdf()
 
     def test_gdf_method(self):
-        o_z, d_z, centroids = _assign_zones(self.fdf, self.zones)
+        o_z, d_z, o_cent, d_cent = _assign_zones(self.fdf, self.zones)
         self.assertEqual(len(o_z), 6)
         self.assertEqual(len(d_z), 6)
-        self.assertIsInstance(centroids, dict)
-        self.assertEqual(len(centroids), 4)
+        self.assertIsInstance(o_cent, dict)
+        self.assertEqual(len(o_cent), 4)
+        self.assertEqual(len(d_cent), 4)
 
     def test_custom_zone_id_col(self):
         zones = _make_named_zone_gdf()
-        o_z, d_z, centroids = _assign_zones(
+        o_z, d_z, o_cent, d_cent = _assign_zones(
             self.fdf, zones, zone_id_col='name',
         )
         self.assertEqual(len(o_z), 6)
-        self.assertEqual(len(centroids), 4)
-
-
-class TestBuildODMatrix(unittest.TestCase):
-    def setUp(self):
-        self.fdf = _make_synthetic_fdf(4)
-
-    def test_basic_matrix(self):
-        o_z = np.array([0, 0, 1, 1])
-        d_z = np.array([0, 1, 0, 1])
-        matrix, zone_ids = _build_od_matrix(
-            self.fdf, o_z, d_z, weight='count',
-        )
-        self.assertEqual(matrix.shape, (2, 2))
-        self.assertEqual(matrix[0, 0], 1)
-        self.assertEqual(matrix[0, 1], 1)
-        self.assertEqual(matrix[1, 0], 1)
-        self.assertEqual(matrix[1, 1], 1)
-
-    def test_weight_length(self):
-        flows = FlowSeries([
-            Flow([[0.0, 0.0], [1.0, 0.0]]),
-            Flow([[1.0, 0.0], [0.0, 0.0]]),
-        ])
-        fdf2 = FlowDataFrame(
-            {'v': [1, 2]}, geometry=flows, crs="EPSG:3857",
-        )
-        o_z = np.array([0, 1])
-        d_z = np.array([1, 0])
-        matrix, _ = _build_od_matrix(fdf2, o_z, d_z, weight='length')
-        self.assertGreater(matrix.sum(), 0)
-
-    def test_empty(self):
-        o_z = np.array([], dtype=int)
-        d_z = np.array([], dtype=int)
-        matrix, zone_ids = _build_od_matrix(
-            FlowDataFrame({'a': []}, geometry=FlowSeries([]), crs="EPSG:4326"),
-            o_z, d_z, weight='count',
-        )
-        self.assertEqual(matrix.shape, (0, 0))
-        self.assertEqual(len(zone_ids), 0)
-
-    def test_string_zone_ids(self):
-        o_z = np.array(['A', 'A', 'B'])
-        d_z = np.array(['B', 'B', 'A'])
-        flows = FlowSeries([
-            Flow([[1.0, 1.0], [6.0, 6.0]]),
-            Flow([[1.5, 1.5], [6.5, 6.5]]),
-            Flow([[6.0, 6.0], [1.0, 1.0]]),
-        ])
-        fdf2 = FlowDataFrame(
-            {'v': [1, 1, 1]}, geometry=flows, crs="EPSG:4326",
-        )
-        matrix, zone_ids = _build_od_matrix(fdf2, o_z, d_z)
-        self.assertEqual(matrix.shape, (2, 2))
-        self.assertIn('A', zone_ids)
-        self.assertIn('B', zone_ids)
+        self.assertEqual(len(o_cent), 4)
+        self.assertEqual(len(d_cent), 4)
 
 
 class TestRotateMatrix(unittest.TestCase):
@@ -303,7 +248,8 @@ class TestODMatrixVisualizer(unittest.TestCase):
         self.assertIsNotNone(vis.matrix_)
         self.assertIsNotNone(vis.o_ids_)
         self.assertIsNotNone(vis.d_ids_)
-        self.assertIsNotNone(vis.zone_centroids_)
+        self.assertIsNotNone(vis.o_centroids_)
+        self.assertIsNotNone(vis.d_centroids_)
         self.assertIsNotNone(vis.o_zones_)
         self.assertIsNotNone(vis.d_zones_)
         self.assertGreater(len(vis.o_ids_), 0)
@@ -367,7 +313,8 @@ class TestMapTrixVisualizer(unittest.TestCase):
         vis.fit(self.fdf)
         self.assertIsNotNone(vis.matrix_)
         self.assertIsNotNone(vis.zone_ids_)
-        self.assertIsNotNone(vis.zone_centroids_)
+        self.assertIsNotNone(vis.o_centroids_)
+        self.assertIsNotNone(vis.d_centroids_)
         self.assertIsNotNone(vis._outflows)
         self.assertIsNotNone(vis._inflows)
         self.assertIsNotNone(vis.o_order_)

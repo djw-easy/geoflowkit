@@ -16,22 +16,21 @@ import geopandas as gpd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from shapely.geometry import Point
 
 from geoflowkit.visualization.od_matrix import ODMatrixVisualizer
 from geoflowkit.visualization._utils import (
-    _rotate_matrix,
+    _ax_to_fig,
     _calculate_matrix_anchor_point,
     _calculate_rotated_point,
-    _ax_to_fig,
+    _compute_representative_points,
+    _draw_size_overlay,
     _linear_scaling,
     _plot_centroids,
     _plot_labels,
-    _compute_representative_points,
-    _prepare_zones,
+    _rotate_matrix,
 )
 
-class MapTrixVisualizer:
+class MapTrixVisualizer(ODMatrixVisualizer):
     """MapTrix layout: origin/destination maps + rotated OD matrix + guide lines.
 
     Parameters
@@ -93,8 +92,8 @@ class MapTrixVisualizer:
         Size values per cell, or ``None`` when *size_weight* is not set.
     zone_ids_ : np.ndarray
         All zone IDs.
-    zone_centroids_ : dict
-        Mapping zone ID → ``(x, y)`` representative point.
+    o_centroids_, d_centroids_ : dict
+        Mapping zone ID → ``(x, y)`` representative point for origins / destinations.
     o_order_, d_order_ : list
         Zone ordering for origin columns / destination rows.
     """
@@ -123,7 +122,7 @@ class MapTrixVisualizer:
         title_fontsize: int = 16,
         include_self_flows: bool = True,
     ):
-        self._matrix_vis = ODMatrixVisualizer(
+        super().__init__(
             zones=zones, origin_zones=origin_zones, dest_zones=dest_zones,
             zone_id_col=zone_id_col, dest_zone_id_col=dest_zone_id_col,
             weight=weight, size_weight=size_weight,
@@ -132,56 +131,27 @@ class MapTrixVisualizer:
             include_self_flows=include_self_flows,
         )
 
-        # convenience references
-        self.origin_zones = self._matrix_vis.origin_zones
-        self.dest_zones = self._matrix_vis.dest_zones
-        self._asymmetric = self._matrix_vis._asymmetric
-        self.zone_id_col = zone_id_col
-        self.dest_zone_id_col = dest_zone_id_col if dest_zone_id_col is not None else zone_id_col
-        self.weight = weight
-        self.size_weight = size_weight
         self.matrix_cmap = matrix_cmap
-        self.vmin = vmin
-        self.vmax = vmax
         self.map_cmap = map_cmap if map_cmap is not None else matrix_cmap
         self.max_centroid_size = max_centroid_size
         self.line_color = line_color
         self.line_alpha = line_alpha
-        self.show_labels = show_labels
-        self.label_fontsize = label_fontsize
         self.out_title = out_title
         self.in_title = in_title
         self.title_fontsize = title_fontsize
-        self.include_self_flows = include_self_flows
 
         # fit-time
-        self.matrix_ = None
-        self.size_matrix_ = None
         self._full_matrix = None
         self._full_size_matrix = None
-        self.zone_ids_ = None
-        self.zone_centroids_ = None
-        self.o_zones_ = None
-        self.d_zones_ = None
-        self._outflows = None
-        self._inflows = None
         self.o_order_ = None
         self.d_order_ = None
         self._bounds = None
         self._zone_to_idx = None
         self._d_zone_to_idx = None
-        self._o_zone_geometries_ = None
-        self._d_zone_geometries_ = None
-        self._o_all_ids = None
-        self._d_all_ids = None
 
         # plot-time
         self._im = None
         self._transform = None
-        self._o_scatter = None
-        self._d_scatter = None
-        self._o_labels = []
-        self._d_labels = []
 
     # ==================================================================
     # Fit
@@ -189,54 +159,32 @@ class MapTrixVisualizer:
 
     def fit(self, fdf):
         """Aggregate flows and prepare layout."""
-        self._matrix_vis.fit(fdf)
+        super().fit(fdf)
 
-        # copy computed data
-        self.o_zones_ = self._matrix_vis.o_zones_
-        self.d_zones_ = self._matrix_vis.d_zones_
-        self.zone_centroids_ = dict(self._matrix_vis.zone_centroids_)
-        self._outflows = dict(self._matrix_vis._outflows)
-        self._inflows = dict(self._matrix_vis._inflows)
-        self._full_matrix = self._matrix_vis._raw_matrix.copy()
+        self._full_matrix = self._raw_matrix.copy()
         self._full_size_matrix = (
-            self._matrix_vis._raw_size_matrix.copy()
-            if self._matrix_vis._raw_size_matrix is not None else None
+            self._raw_size_matrix.copy()
+            if self._raw_size_matrix is not None else None
         )
-        o_all_ids = list(self._matrix_vis._o_all_ids)
-        d_all_ids = list(self._matrix_vis._d_all_ids)
-        self._o_all_ids = o_all_ids
-        self._d_all_ids = d_all_ids
+        o_all_ids = list(self._o_all_ids)
+        d_all_ids = list(self._d_all_ids) if self._asymmetric else o_all_ids
 
-        # NaN diagonal for MapTrix visual transparency
-        if not self.include_self_flows and not self._asymmetric:
-            np.fill_diagonal(self._full_matrix, np.nan)
-
-        # zone geometries
-        o_prepared = _prepare_zones(self.origin_zones, zone_id_col=self.zone_id_col)
-        self._o_zone_geometries_ = {
-            row["zone_id"]: row["geometry"]
-            for _, row in o_prepared.iterrows()
-        }
-        if self._asymmetric:
-            d_prepared = _prepare_zones(self.dest_zones, zone_id_col=self.dest_zone_id_col)
-            self._d_zone_geometries_ = {
-                row["zone_id"]: row["geometry"]
-                for _, row in d_prepared.iterrows()
-            }
-        else:
-            self._d_zone_geometries_ = self._o_zone_geometries_
-
-        # representative points
-        rep_points = _compute_representative_points(
+        # representative points (override parent's centroid-based coords)
+        rep_o = _compute_representative_points(
             self.origin_zones, zone_id_col=self.zone_id_col,
         )
-        if self._asymmetric:
-            rep_points.update(_compute_representative_points(
+        for zid in self.o_centroids_:
+            if zid in rep_o:
+                self.o_centroids_[zid] = rep_o[zid]
+
+        rep_d = (
+            _compute_representative_points(
                 self.dest_zones, zone_id_col=self.dest_zone_id_col,
-            ))
-        for zid in self.zone_centroids_:
-            if zid in rep_points:
-                self.zone_centroids_[zid] = rep_points[zid]
+            ) if self._asymmetric else rep_o
+        )
+        for zid in self.d_centroids_:
+            if zid in rep_d:
+                self.d_centroids_[zid] = rep_d[zid]
 
         # index maps
         self.zone_ids_ = np.array(o_all_ids)
@@ -247,19 +195,18 @@ class MapTrixVisualizer:
         )
 
         # initial ordering by centroid Y
-        centroids = self.zone_centroids_
         if self._asymmetric:
             self.o_order_ = sorted(
-                [z for z in o_all_ids if z in centroids],
-                key=lambda z: centroids[z][1],
+                [z for z in o_all_ids if z in self.o_centroids_],
+                key=lambda z: self.o_centroids_[z][1],
             )
             self.d_order_ = sorted(
-                [z for z in d_all_ids if z in centroids],
-                key=lambda z: centroids[z][1],
+                [z for z in d_all_ids if z in self.d_centroids_],
+                key=lambda z: self.d_centroids_[z][1],
             )
         else:
-            self.o_order_ = sorted(o_all_ids, key=lambda z: centroids[z][1])
-            self.d_order_ = sorted(o_all_ids, key=lambda z: centroids[z][1])
+            self.o_order_ = sorted(o_all_ids, key=lambda z: self.o_centroids_[z][1])
+            self.d_order_ = sorted(o_all_ids, key=lambda z: self.d_centroids_[z][1])
 
         # exclude zero-flow zones
         for attr, flow_dict in [('o_order_', self._outflows),
@@ -333,15 +280,21 @@ class MapTrixVisualizer:
         outflow_w_map = _width_map(self._outflows)
         inflow_w_map = _width_map(self._inflows)
 
+        centroids_map = {
+            'origin': self.o_centroids_,
+            'dest': self.d_centroids_,
+        }
+
         for side, ax_map, zid_order, flow_dict, width_map, matrix_side in [
             ('origin', ax_map_o, self.o_order_, self._outflows, outflow_w_map, 'left'),
             ('dest',   ax_map_d, self.d_order_, self._inflows,  inflow_w_map, 'bottom'),
         ]:
+            centroids = centroids_map[side]
             for idx, zid in enumerate(zid_order):
-                if zid not in self.zone_centroids_:
+                if zid not in centroids:
                     continue
 
-                cx, cy = self.zone_centroids_[zid]
+                cx, cy = centroids[zid]
                 fig_cx, fig_cy = _ax_to_fig(ax_map, fig, cx, cy)
 
                 anchor_x, anchor_y = _calculate_matrix_anchor_point(
@@ -370,32 +323,28 @@ class MapTrixVisualizer:
         ax_map_d = fig.add_subplot(gs[1, 0])
         ax_matrix = fig.add_subplot(gs[:, 1])
         self._draw_map(ax_map_o, self.o_order_, self._outflows,
-                       self.origin_zones,
-                       scatter='_o_scatter', labels='_o_labels')
+                       self.origin_zones, self.o_centroids_)
         self._draw_map(ax_map_d, self.d_order_, self._inflows,
-                       self.dest_zones,
-                       scatter='_d_scatter', labels='_d_labels')
+                       self.dest_zones, self.d_centroids_)
         im, transform = self._draw_matrix(ax_matrix)
         self._draw_titles(ax_map_o, ax_map_d)
         return ax_map_o, ax_map_d, ax_matrix, im, transform
 
-    def _draw_map(self, ax, zid_order, flow_dict, zones_gdf, scatter, labels):
+    def _draw_map(self, ax, zid_order, flow_dict, zones_gdf, centroids):
         """Draw one map with zone boundaries, centroids, and labels."""
-        centroids = {z: self.zone_centroids_[z] for z in zid_order}
+        centroids = {z: centroids[z] for z in zid_order if z in centroids}
         flows = np.array([flow_dict[z] for z in zid_order])
         sizes = self._scale_sizes(flows)
         colors = flows if np.ptp(flows) > 0 else 'k'
 
         self._draw_map_base(ax, zones_gdf)
-        setattr(self, scatter, _plot_centroids(
+        _plot_centroids(
             ax, centroids, sizes=sizes, colors=colors,
             cmap=self.map_cmap, vmin=self.vmin, vmax=self.vmax,
-        ))
-        setattr(self, labels, [])
+        )
         if self.show_labels:
             lbls = {z: str(z) for z in centroids}
-            setattr(self, labels,
-                    _plot_labels(ax, centroids, lbls, fontsize=self.label_fontsize))
+            _plot_labels(ax, centroids, lbls, fontsize=self.label_fontsize)
         ax.axis('off')
 
     def _draw_map_base(self, ax, zones_gdf=None):
@@ -435,15 +384,7 @@ class MapTrixVisualizer:
                     cx_list.append(cx)
                     cy_list.append(cy)
                     sizes_list.append(self.size_matrix_[i, j])
-            if sizes_list:
-                s_arr = np.array(sizes_list)
-                if np.ptp(s_arr) > 0:
-                    scaled = _linear_scaling(s_arr, (20, 800))
-                else:
-                    scaled = np.full_like(s_arr, 200.0)
-                ax.scatter(cx_list, cy_list, s=scaled,
-                           facecolors='none', edgecolors='gray',
-                           linewidths=0.5, alpha=0.7, zorder=5)
+            _draw_size_overlay(ax, cx_list, cy_list, sizes_list)
 
         for spine in ax.spines.values():
             spine.set_visible(False)
@@ -456,68 +397,10 @@ class MapTrixVisualizer:
                         xytext=(15, 0), textcoords='offset points',
                         fontsize=self.title_fontsize, weight='bold')
 
-    def _redraw_centroids(self, ax, positions, zid_order, flow_dict,
-                          scatter, labels):
-        """Remove old scatter/labels and redraw all centroids at final positions."""
-        old_scatter = getattr(self, scatter, None)
-        if old_scatter is not None:
-            old_scatter.remove()
-            setattr(self, scatter, None)
-        for t in getattr(self, labels, []):
-            t.remove()
-        setattr(self, labels, [])
-
-        flows = np.array([flow_dict[z] for z in zid_order])
-        sizes = self._scale_sizes(flows)
-        kwargs = dict(colors=flows, cmap=self.map_cmap, vmin=self.vmin, vmax=self.vmax) \
-            if np.ptp(flows) > 0 else dict(colors='k')
-        setattr(self, scatter, _plot_centroids(
-            ax, positions, sizes=sizes, zorder=5, **kwargs,
-        ))
-        if self.show_labels:
-            lbls = {z: str(z) for z in zid_order}
-            setattr(self, labels, _plot_labels(
-                ax, positions, lbls, fontsize=self.label_fontsize,
-            ))
-
-    def _sample_zone_candidate_points(self, zid, ax_map, fig, grid_size=17):
-        if self._o_zone_geometries_ is None:
-            return []
-        geom = self._o_zone_geometries_.get(zid)
-        if geom is None or geom.is_empty:
-            return []
-        mnx, mny, mxx, mxy = geom.bounds
-        xs = np.linspace(mnx, mxx, grid_size)
-        ys = np.linspace(mny, mxy, grid_size)
-
-        candidates = []
-        rp = geom.representative_point()
-        candidates.append(_ax_to_fig(ax_map, fig, rp.x, rp.y))
-        c = geom.centroid
-        if geom.contains(c) or geom.touches(c):
-            candidates.append(_ax_to_fig(ax_map, fig, c.x, c.y))
-        for x in xs:
-            for y in ys:
-                pt = Point(float(x), float(y))
-                if geom.contains(pt) or geom.touches(pt):
-                    candidates.append(_ax_to_fig(ax_map, fig, x, y))
-
-        unique, seen = [], set()
-        for x, y in candidates:
-            key = (round(float(x), 8), round(float(y), 8))
-            if key not in seen:
-                seen.add(key)
-                unique.append((float(x), float(y)))
-        return unique
-
     def _draw_matrix_anchors(self, fig, ax_matrix):
-        """Debug helper: draw matrix anchor points for origin and destination."""
         if self._transform is None or self.matrix_ is None:
             return
-
         n_rows, n_cols = self.matrix_.shape
-
-        # origin anchors: left edge (upper-left diamond edge with CW rotation)
         o_xs, o_ys = [], []
         for idx in range(n_cols):
             x, y = _calculate_matrix_anchor_point(
@@ -525,8 +408,6 @@ class MapTrixVisualizer:
             )
             o_xs.append(x)
             o_ys.append(y)
-
-        # destination anchors: bottom edge (lower-left diamond edge with CW rotation)
         d_xs, d_ys = [], []
         for idx in range(n_rows):
             x, y = _calculate_matrix_anchor_point(
@@ -534,18 +415,8 @@ class MapTrixVisualizer:
             )
             d_xs.append(x)
             d_ys.append(y)
-
-        ax_matrix.scatter(
-            o_xs, o_ys,
-            s=30, c="cyan", edgecolor="black", zorder=20,
-            label="origin anchors",
-        )
-
-        ax_matrix.scatter(
-            d_xs, d_ys,
-            s=30, c="magenta", edgecolor="black", zorder=20,
-            label="destination anchors",
-        )
+        ax_matrix.scatter(o_xs, o_ys, s=30, c="cyan", edgecolor="black", zorder=20)
+        ax_matrix.scatter(d_xs, d_ys, s=30, c="magenta", edgecolor="black", zorder=20)
 
     # ==================================================================
     # Colorbar & scale

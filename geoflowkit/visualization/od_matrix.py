@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 
 from geoflowkit.visualization._utils import (
     _assign_zones,
+    _draw_size_overlay,
     _get_weights,
-    _linear_scaling,
     _prepare_zones,
 )
 
@@ -83,8 +83,8 @@ class ODMatrixVisualizer:
     d_ids_ : np.ndarray
         Zone IDs for destination (column) axis, including only zones
         with nonzero inflow.
-    zone_centroids_ : dict
-        Mapping from zone ID to ``(x, y)`` centroid.
+    o_centroids_, d_centroids_ : dict
+        Mapping from zone ID to ``(x, y)`` centroid for origins / destinations.
     o_zones_, d_zones_ : np.ndarray
         Per-flow zone assignments (set after :meth:`fit`).
     outflows_, inflows_ : dict
@@ -143,7 +143,8 @@ class ODMatrixVisualizer:
         self.size_matrix_ = None
         self.o_ids_ = None
         self.d_ids_ = None
-        self.zone_centroids_ = None
+        self.o_centroids_ = None
+        self.d_centroids_ = None
         self.o_zones_ = None
         self.d_zones_ = None
         self._outflows = None
@@ -170,7 +171,7 @@ class ODMatrixVisualizer:
         self : ODMatrixVisualizer
             Fitted visualizer.
         """
-        self.o_zones_, self.d_zones_, self.zone_centroids_ = _assign_zones(
+        self.o_zones_, self.d_zones_, self.o_centroids_, self.d_centroids_ = _assign_zones(
             fdf, self.origin_zones, zone_id_col=self.zone_id_col,
             dest_zones=None if not self._asymmetric else self.dest_zones,
             dest_zone_id_col=None if not self._asymmetric else self.dest_zone_id_col,
@@ -182,7 +183,7 @@ class ODMatrixVisualizer:
             o_all_ids = o_prepared['zone_id'].tolist()
             d_all_ids = d_prepared['zone_id'].tolist()
         else:
-            o_all_ids = list(self.zone_centroids_.keys())
+            o_all_ids = list(self.o_centroids_.keys())
             d_all_ids = o_all_ids
 
         self._o_all_ids = o_all_ids
@@ -200,6 +201,8 @@ class ODMatrixVisualizer:
         if size_values is not None:
             size_matrix = np.zeros((len(o_all_ids), len(d_all_ids)))
 
+        self._outflows = {z: 0.0 for z in o_all_ids}
+        self._inflows = {z: 0.0 for z in d_all_ids}
         for i in range(len(fdf)):
             oz = self.o_zones_[i]
             dz = self.d_zones_[i]
@@ -209,22 +212,16 @@ class ODMatrixVisualizer:
                 full_matrix[oi, di] += w_values[i]
                 if size_values is not None:
                     size_matrix[oi, di] += size_values[i]
+            if oz in self._outflows:
+                self._outflows[oz] += w_values[i]
+            if dz in self._inflows:
+                self._inflows[dz] += w_values[i]
 
         if not self.include_self_flows and not self._asymmetric:
             np.fill_diagonal(full_matrix, 0.0)
 
         self._raw_matrix = full_matrix
         self._raw_size_matrix = size_matrix if size_values is not None else None
-
-        self._outflows = {z: 0.0 for z in o_all_ids}
-        self._inflows = {z: 0.0 for z in d_all_ids}
-        for i in range(len(fdf)):
-            oz = self.o_zones_[i]
-            dz = self.d_zones_[i]
-            if oz in self._outflows:
-                self._outflows[oz] += w_values[i]
-            if dz in self._inflows:
-                self._inflows[dz] += w_values[i]
 
         o_ids = [z for z in o_all_ids if self._outflows[z] > 0]
         d_ids = [z for z in d_all_ids if self._inflows[z] > 0]
@@ -297,14 +294,7 @@ class ODMatrixVisualizer:
             sizes = self.size_matrix_.ravel()
             vals = self.matrix_.ravel()
             mask = ~np.isnan(vals) & (vals != 0)
-            xs, ys, sizes = xs[mask], ys[mask], sizes[mask]
-            if len(sizes) > 0:
-                if np.ptp(sizes) > 0:
-                    scaled = _linear_scaling(sizes, (20, 800))
-                else:
-                    scaled = np.full_like(sizes, 200.0)
-                ax.scatter(xs, ys, s=scaled, facecolors='none',
-                           edgecolors='gray', linewidths=0.5, alpha=0.7, zorder=5)
+            _draw_size_overlay(ax, xs[mask], ys[mask], sizes[mask])
 
         # --- axis labels ---
         if self.show_labels:
