@@ -31,20 +31,15 @@ class ODMatrixVisualizer:
 
     Parameters
     ----------
-    zones : GeoDataFrame, optional
-        Polygon geometries defining the spatial zones.  Used as a
-        backward-compatible alias when *origin_zones* is not given.
-        Must contain a column that uniquely identifies each zone
-        (see *zone_id_col*).
-    origin_zones : GeoDataFrame, keyword-only, optional
-        Zone polygons for the origin (row) axis.  Takes precedence
-        over *zones*.
+    origin_zones : GeoDataFrame
+        Zone polygons for the origin (row) axis.  Must contain a
+        column that uniquely identifies each zone (see *zone_id_col*).
     dest_zones : GeoDataFrame, keyword-only, optional
         Zone polygons for the destination (column) axis.  When
         ``None`` (default) the same zones are used for both axes.
     zone_id_col : str, optional
-        Column in *origin_zones* (or *zones*) to use as the zone
-        identifier.  ``None`` uses the GeoDataFrame index.
+        Column in *origin_zones* to use as the zone identifier.
+        ``None`` uses the GeoDataFrame index.
     dest_zone_id_col : str, optional
         Column in *dest_zones* for zone identifier.  ``None`` uses
         *zone_id_col*.
@@ -101,9 +96,8 @@ class ODMatrixVisualizer:
 
     def __init__(
         self,
-        zones: gpd.GeoDataFrame | None = None,
+        origin_zones: gpd.GeoDataFrame,
         *,
-        origin_zones: gpd.GeoDataFrame | None = None,
         dest_zones: gpd.GeoDataFrame | None = None,
         zone_id_col: str | None = None,
         dest_zone_id_col: str | None = None,
@@ -116,14 +110,7 @@ class ODMatrixVisualizer:
         label_fontsize: int = 10,
         include_self_flows: bool = True,
     ):
-        if origin_zones is not None:
-            self.origin_zones = origin_zones
-        elif zones is not None:
-            self.origin_zones = zones
-        else:
-            raise TypeError(
-                "Either 'zones' or 'origin_zones' must be provided."
-            )
+        self.origin_zones = origin_zones
 
         self.dest_zones = dest_zones if dest_zones is not None else self.origin_zones
         self._asymmetric = self.dest_zones is not self.origin_zones

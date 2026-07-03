@@ -35,18 +35,14 @@ class MapTrixVisualizer(ODMatrixVisualizer):
 
     Parameters
     ----------
-    zones : GeoDataFrame, optional
-        Polygon geometries defining the spatial zones.  Used as a
-        backward-compatible alias when *origin_zones* is not given.
-    origin_zones : GeoDataFrame, keyword-only, optional
-        Zone polygons for the origin map.  Takes precedence over
-        *zones*.
+    origin_zones : GeoDataFrame
+        Zone polygons for the origin map.
     dest_zones : GeoDataFrame, keyword-only, optional
-        Zone polygons for the destination map.  When ``None`` (default)
-        the same zones are used for both maps.
+        Zone polygons for the destination map.  When
+        ``None`` (default) the same zones are used for both maps.
     zone_id_col : str, optional
-        Column in *origin_zones* (or *zones*) used as the zone
-        identifier.  ``None`` uses the GeoDataFrame index.
+        Column in *origin_zones* used as the zone identifier.
+        ``None`` uses the GeoDataFrame index.
     dest_zone_id_col : str, optional
         Column in *dest_zones* for zone identifier.  ``None`` uses
         *zone_id_col*.
@@ -100,9 +96,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
 
     def __init__(
         self,
-        zones: gpd.GeoDataFrame | None = None,
+        origin_zones: gpd.GeoDataFrame,
         *,
-        origin_zones: gpd.GeoDataFrame | None = None,
         dest_zones: gpd.GeoDataFrame | None = None,
         zone_id_col: str | None = None,
         dest_zone_id_col: str | None = None,
@@ -123,7 +118,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         include_self_flows: bool = True,
     ):
         super().__init__(
-            zones=zones, origin_zones=origin_zones, dest_zones=dest_zones,
+            origin_zones=origin_zones, dest_zones=dest_zones,
             zone_id_col=zone_id_col, dest_zone_id_col=dest_zone_id_col,
             weight=weight, size_weight=size_weight,
             cmap=matrix_cmap, vmin=vmin, vmax=vmax,
@@ -146,7 +141,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.o_order_ = None
         self.d_order_ = None
         self._bounds = None
-        self._zone_to_idx = None
+        self._o_zone_to_idx = None
         self._d_zone_to_idx = None
 
         # plot-time
@@ -188,10 +183,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
 
         # index maps
         self.zone_ids_ = np.array(o_all_ids)
-        self._zone_to_idx = {z: i for i, z in enumerate(o_all_ids)}
+        self._o_zone_to_idx = {z: i for i, z in enumerate(o_all_ids)}
         self._d_zone_to_idx = (
             {z: i for i, z in enumerate(d_all_ids)}
-            if self._asymmetric else self._zone_to_idx
+            if self._asymmetric else self._o_zone_to_idx
         )
 
         # initial ordering by centroid Y
@@ -227,7 +222,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         """
         if self._full_matrix is None or self.o_order_ is None or self.d_order_ is None:
             return
-        o_pos = [self._zone_to_idx[z] for z in self.o_order_]
+        o_pos = [self._o_zone_to_idx[z] for z in self.o_order_]
         d_pos = [self._d_zone_to_idx[z] for z in self.d_order_]
         self.matrix_ = self._full_matrix[np.ix_(o_pos, d_pos)].T
         if self._full_size_matrix is not None:

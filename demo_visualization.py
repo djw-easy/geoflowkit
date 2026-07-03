@@ -65,7 +65,7 @@ print('\n--- OD Matrix heatmap ---')
 
 fig1, ax1 = plt.subplots(figsize=(10, 8))
 ODMatrixVisualizer(
-    zones=border,
+    origin_zones=border,
     zone_id_col='Name',
     weight='count',
     cmap='OrRd',
@@ -88,7 +88,7 @@ print('\n--- OD Matrix bubble (weight + size_weight) ---')
 
 fig2, ax2 = plt.subplots(figsize=(10, 8))
 ODMatrixVisualizer(
-    zones=border,
+    origin_zones=border,
     zone_id_col='Name',
     weight='count',
     size_weight='length',
@@ -111,7 +111,7 @@ print('Saved demo_od_matrix_bubble.png')
 print('\n--- MapTrix figure ---')
 
 fig3 = MapTrixVisualizer(
-    zones=border,
+    origin_zones=border,
     zone_id_col='Name',
     weight='count',
     size_weight='length',

@@ -243,7 +243,7 @@ class TestODMatrixVisualizer(unittest.TestCase):
         self.zones = _make_zone_gdf()
 
     def test_fit_sets_attributes(self):
-        vis = ODMatrixVisualizer(zones=self.zones)
+        vis = ODMatrixVisualizer(origin_zones=self.zones)
         vis.fit(self.fdf)
         self.assertIsNotNone(vis.matrix_)
         self.assertIsNotNone(vis.o_ids_)
@@ -258,29 +258,29 @@ class TestODMatrixVisualizer(unittest.TestCase):
         self.assertEqual(vis.matrix_.shape[1], len(vis.d_ids_))
 
     def test_plot_returns_ax(self):
-        vis = ODMatrixVisualizer(zones=self.zones)
+        vis = ODMatrixVisualizer(origin_zones=self.zones)
         vis.fit(self.fdf)
         ax = vis.plot()
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
     def test_plot_before_fit_raises(self):
-        vis = ODMatrixVisualizer(zones=self.zones)
+        vis = ODMatrixVisualizer(origin_zones=self.zones)
         with self.assertRaises(RuntimeError):
             vis.plot()
 
     def test_fit_plot_returns_ax(self):
-        ax = ODMatrixVisualizer(zones=self.zones).fit_plot(self.fdf)
+        ax = ODMatrixVisualizer(origin_zones=self.zones).fit_plot(self.fdf)
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
     def test_with_figsize(self):
-        ax = ODMatrixVisualizer(zones=self.zones).fit_plot(self.fdf, figsize=(8, 6))
+        ax = ODMatrixVisualizer(origin_zones=self.zones).fit_plot(self.fdf, figsize=(8, 6))
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
     def test_no_colorbar(self):
-        vis = ODMatrixVisualizer(zones=self.zones)
+        vis = ODMatrixVisualizer(origin_zones=self.zones)
         vis.fit(self.fdf)
         ax = vis.plot(colorbar=False)
         self.assertIsNotNone(ax)
@@ -288,13 +288,13 @@ class TestODMatrixVisualizer(unittest.TestCase):
 
     def test_external_ax(self):
         fig, ax = plt.subplots()
-        result = ODMatrixVisualizer(zones=self.zones).fit_plot(self.fdf, ax=ax)
+        result = ODMatrixVisualizer(origin_zones=self.zones).fit_plot(self.fdf, ax=ax)
         self.assertIs(result, ax)
         plt.close(fig)
 
     def test_custom_zone_id_col(self):
         zones = _make_named_zone_gdf()
-        ax = ODMatrixVisualizer(zones=zones, zone_id_col='name').fit_plot(self.fdf)
+        ax = ODMatrixVisualizer(origin_zones=zones, zone_id_col='name').fit_plot(self.fdf)
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
@@ -309,7 +309,7 @@ class TestMapTrixVisualizer(unittest.TestCase):
         self.zones = _make_zone_gdf()
 
     def test_fit_sets_attributes(self):
-        vis = MapTrixVisualizer(zones=self.zones)
+        vis = MapTrixVisualizer(origin_zones=self.zones)
         vis.fit(self.fdf)
         self.assertIsNotNone(vis.matrix_)
         self.assertIsNotNone(vis.zone_ids_)
@@ -330,14 +330,14 @@ class TestMapTrixVisualizer(unittest.TestCase):
             self.assertGreater(vis._inflows[z], 0)
 
     def test_outflows_inflows_sum(self):
-        vis = MapTrixVisualizer(zones=self.zones)
+        vis = MapTrixVisualizer(origin_zones=self.zones)
         vis.fit(self.fdf)
         total_out = sum(vis._outflows.values())
         total_in = sum(vis._inflows.values())
         self.assertEqual(total_out, total_in)
 
     def test_plot_returns_fig(self):
-        vis = MapTrixVisualizer(zones=self.zones)
+        vis = MapTrixVisualizer(origin_zones=self.zones)
         vis.fit(self.fdf)
         fig = vis.plot(figsize=(10, 6))
         self.assertIsNotNone(fig)
@@ -345,31 +345,31 @@ class TestMapTrixVisualizer(unittest.TestCase):
         plt.close(fig)
 
     def test_plot_before_fit_raises(self):
-        vis = MapTrixVisualizer(zones=self.zones)
+        vis = MapTrixVisualizer(origin_zones=self.zones)
         with self.assertRaises(RuntimeError):
             vis.plot()
 
     def test_fit_plot_returns_fig(self):
-        fig = MapTrixVisualizer(zones=self.zones).fit_plot(self.fdf, figsize=(10, 6))
+        fig = MapTrixVisualizer(origin_zones=self.zones).fit_plot(self.fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_with_custom_titles(self):
         fig = MapTrixVisualizer(
-            zones=self.zones, out_title='SOURCE', in_title='SINK',
+            origin_zones=self.zones, out_title='SOURCE', in_title='SINK',
         ).fit_plot(self.fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_no_labels(self):
         fig = MapTrixVisualizer(
-            zones=self.zones, show_labels=False,
+            origin_zones=self.zones, show_labels=False,
         ).fit_plot(self.fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_subplot_structure(self):
-        vis = MapTrixVisualizer(zones=self.zones)
+        vis = MapTrixVisualizer(origin_zones=self.zones)
         vis.fit(self.fdf)
         fig = vis.plot(figsize=(10, 6))
         self.assertGreaterEqual(len(fig.axes), 3)
@@ -377,19 +377,19 @@ class TestMapTrixVisualizer(unittest.TestCase):
 
     def test_external_figure(self):
         fig = plt.figure(figsize=(12, 6))
-        result = MapTrixVisualizer(zones=self.zones).fit_plot(self.fdf, fig=fig)
+        result = MapTrixVisualizer(origin_zones=self.zones).fit_plot(self.fdf, fig=fig)
         self.assertIs(result, fig)
         plt.close(fig)
 
     def test_custom_zone_id_col(self):
         zones = _make_named_zone_gdf()
-        fig = MapTrixVisualizer(zones=zones, zone_id_col='name').fit_plot(
+        fig = MapTrixVisualizer(origin_zones=zones, zone_id_col='name').fit_plot(
             self.fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_maptrix_with_figsize(self):
-        fig = MapTrixVisualizer(zones=self.zones).fit_plot(
+        fig = MapTrixVisualizer(origin_zones=self.zones).fit_plot(
             self.fdf, figsize=(10, 6),
         )
         self.assertIsInstance(fig, plt.Figure)
@@ -408,7 +408,7 @@ class TestEdgeCases(unittest.TestCase):
         fdf = FlowDataFrame(
             {'a': []}, geometry=FlowSeries([]), crs="EPSG:4326",
         )
-        vis = ODMatrixVisualizer(zones=self.zones)
+        vis = ODMatrixVisualizer(origin_zones=self.zones)
         vis.fit(fdf)
         self.assertEqual(vis.matrix_.shape, (4, 4))  # all zones, even with no flows
         ax = vis.plot()
@@ -419,21 +419,21 @@ class TestEdgeCases(unittest.TestCase):
         fdf = FlowDataFrame(
             {'a': []}, geometry=FlowSeries([]), crs="EPSG:4326",
         )
-        vis = MapTrixVisualizer(zones=self.zones)
+        vis = MapTrixVisualizer(origin_zones=self.zones)
         vis.fit(fdf)
         self.assertEqual(vis.matrix_.shape, (4, 4))  # all zones, even with no flows
 
     def test_single_flow_od(self):
         flows = FlowSeries([Flow([[1, 1], [6, 6]])])
         fdf = FlowDataFrame({'v': [1]}, geometry=flows, crs="EPSG:4326")
-        ax = ODMatrixVisualizer(zones=self.zones).fit_plot(fdf)
+        ax = ODMatrixVisualizer(origin_zones=self.zones).fit_plot(fdf)
         self.assertIsNotNone(ax)
         plt.close(ax.figure)
 
     def test_single_flow_maptrix(self):
         flows = FlowSeries([Flow([[1, 1], [6, 6]])])
         fdf = FlowDataFrame({'v': [1]}, geometry=flows, crs="EPSG:4326")
-        fig = MapTrixVisualizer(zones=self.zones).fit_plot(fdf, figsize=(10, 6))
+        fig = MapTrixVisualizer(origin_zones=self.zones).fit_plot(fdf, figsize=(10, 6))
         self.assertIsInstance(fig, plt.Figure)
         plt.close(fig)
 
