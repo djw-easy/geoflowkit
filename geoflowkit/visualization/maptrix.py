@@ -79,6 +79,17 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         Include flows where origin == destination (matrix diagonal).
         When ``False`` the diagonal is zeroed.  Only effective when
         both axes use the same zone set.
+    height_ratios : list of float, optional
+        Height ratios for the two map subplot rows
+        (default ``[0.5, 0.5]``).
+    width_ratios : list of float, optional
+        Width ratios for left (maps) vs right (matrix) columns
+        (default ``[1, 2]``).
+    cbar_kwds : dict, optional
+        Extra keyword arguments forwarded to
+        :meth:`matplotlib.figure.Figure.colorbar` (e.g. ``shrink``,
+        ``aspect``, ``pad``).  Defaults control vertical orientation
+        with ``shrink=0.9``, ``aspect=30``, ``pad=0.01``.
 
     Attributes
     ----------
@@ -116,6 +127,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         in_title: str = 'Inflow',
         title_fontsize: int = 16,
         include_self_flows: bool = True,
+        height_ratios: list | None = None,
+        width_ratios: list | None = None,
+        cbar_kwds: dict | None = None,
     ):
         super().__init__(
             origin_zones=origin_zones, dest_zones=dest_zones,
@@ -134,6 +148,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.out_title = out_title
         self.in_title = in_title
         self.title_fontsize = title_fontsize
+
+        self.height_ratios = height_ratios if height_ratios is not None else [0.5, 0.5]
+        self.width_ratios = width_ratios if width_ratios is not None else [1, 2]
+        self.cbar_kwds = {} if cbar_kwds is None else dict(cbar_kwds)
 
         # fit-time
         self._full_matrix = None
@@ -313,7 +331,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     # ==================================================================
 
     def _build_figure(self, fig):
-        gs = fig.add_gridspec(2, 2, height_ratios=[0.5, 0.5])
+        gs = fig.add_gridspec(2, 2,
+                              height_ratios=self.height_ratios,
+                              width_ratios=self.width_ratios)
         ax_map_o = fig.add_subplot(gs[0, 0])
         ax_map_d = fig.add_subplot(gs[1, 0])
         ax_matrix = fig.add_subplot(gs[:, 1])
@@ -420,9 +440,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     def _draw_colorbar(self, fig, ax_matrix):
         if self._im is None:
             return
-        cbar = fig.colorbar(self._im, ax=ax_matrix, pad=0.01,
-                            orientation='vertical', aspect=30, shrink=0.9,
-                            location='right')
+        kwds = dict(orientation='vertical', aspect=30, shrink=0.9,
+                    pad=0.01, location='right')
+        kwds.update(self.cbar_kwds)
+        cbar = fig.colorbar(self._im, ax=ax_matrix, **kwds)
         cbar.ax.tick_params(labelsize=self.label_fontsize + 2)
 
     def _scale_sizes(self, values):

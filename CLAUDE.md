@@ -73,6 +73,10 @@ geoflowkit/
 │   └── ftsne/
 │       ├── ftsne.py     # Main FTSNE class
 │       └── utils.py     # Gradient descent, KL divergence, probability calculations
+├── visualization/       # OD Matrix and MapTrix visualizations
+│   ├── od_matrix.py     # ODMatrixVisualizer — heatmap of origin-destination flows
+│   ├── maptrix.py       # MapTrixVisualizer — rotated matrix + maps + guide lines
+│   └── _utils.py        # Zone assignment, matrix building, rendering helpers
 ```
 
 ### Key Design Patterns
@@ -116,3 +120,5 @@ geoflowkit/
 - Community detection algorithms (CNM, Louvain, STOCS) convert FlowDataFrame to a networkx graph via `flows_to_graph()`, then detect communities on the graph; flow-level labels are derived from zone-level community assignments (-1 for cross-community flows)
 - The `within()` method checks both origin AND destination points against a mask
 - FlowSeries.plot() and FlowDataFrame.plot(kind='arrow') render flows as arrows using matplotlib quiver and support a zoom parameter to control the view extent; FlowDataFrame.plot() additionally supports categorical columns for multi-color plotting
+- ODMatrixVisualizer builds an origin-destination matrix by assigning flows to spatial zones (via point-in-polygon), then renders a heatmap with optional proportional circle overlays (size_weight)
+- MapTrixVisualizer extends ODMatrixVisualizer to produce the MapTrix layout: origin map on the left, rotated OD matrix at center, destination map on the right, connected by guide lines; all subplots use figure-relative coordinates and Affine2D transforms

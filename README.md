@@ -178,6 +178,31 @@ ax = fdf.plot(kind='arrow', column='value')
 ax = fs.plot()
 ```
 
+### OD Matrix & MapTrix
+
+```python
+from geoflowkit.visualization import ODMatrixVisualizer, MapTrixVisualizer
+
+# OD Matrix heatmap (colour = flow count)
+ODMatrixVisualizer(
+    origin_zones=border, zone_id_col='Name',
+    weight='count', cmap='OrRd',
+).fit_plot(fdf, ax=ax)
+
+# OD Matrix with proportional circles (size = flow length)
+ODMatrixVisualizer(
+    origin_zones=border, zone_id_col='Name',
+    weight='count', size_weight='length',
+).fit_plot(fdf, ax=ax)
+
+# MapTrix — rotated matrix + origin/destination maps
+MapTrixVisualizer(
+    origin_zones=border, zone_id_col='Name',
+    weight='count', size_weight='length',
+    out_title='Outflow', in_title='Inflow',
+).fit_plot(fdf, figsize=(16, 9))
+```
+
 ### Flow Clustering
 
 ```python
@@ -289,7 +314,7 @@ Jupyter notebook examples are available in the `examples/` folder:
 - [basic_usage.ipynb](examples/basic_usage.ipynb) - Basic usage of Flow, FlowSeries, and FlowDataFrame
 - [clustering.ipynb](examples/clustering.ipynb) - Flow clustering and community detection
 - [kl_function.ipynb](examples/kl_function.ipynb) - K/L functions for spatial clustering detection
-- [ft_sne.ipynb](examples/ft_sne.ipynb) - FTSNE manifold learning for flow data
+- [visualization.ipynb](examples/visualization.ipynb) - OD Matrix, MapTrix, and FTSNE visualizations
 - [centrality.ipynb](examples/centrality.ipynb) - I-index for location irreplaceability
 
 ## API Reference
@@ -306,6 +331,8 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `LouvainFlow`: Louvain community detection
 - `STOCSFlow`: Spatial Tabu Optimization for Community Structure
 - `FTSNE`: A Variant of t-SNE for Flow Data
+- `ODMatrixVisualizer`: OD matrix heatmap visualization
+- `MapTrixVisualizer`: MapTrix layout (matrix + maps + guide lines)
 
 ### Key Functions
 
