@@ -45,12 +45,23 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     size_weight, matrix_cmap, vmin, vmax, show_labels, label_fontsize,
     include_self_flows
         See :class:`~geoflowkit.visualization.ODMatrixVisualizer`.
+    map_label_fontsize : int, optional
+        Font size for zone labels on the maps.  Defaults to
+        ``label_fontsize``.
+    cbar_tick_fontsize : int, optional
+        Font size for colorbar tick labels.  Defaults to
+        ``max(label_fontsize - 1, 7)``.
+    cbar_label_fontsize : int, optional
+        Font size for the colorbar title.  Defaults to
+        ``label_fontsize``.
     map_cmap : str or Colormap, optional
-        Colormap for map proportional symbols.  Defaults to
-        ``matrix_cmap``.
-    max_centroid_size : float, default=260
-        Maximum marker area on the maps, in points squared.  Must not
-        exceed 2000.
+        Colormap for map proportional symbols.  Defaults to ``"viridis"``
+        so low-value map symbols remain visible independently of the matrix
+        colormap.
+    centroid_size_range : tuple of (float, float), default=(30, 260)
+        Minimum and maximum marker areas on the maps, in points squared.
+        Values must be finite, positive, increasing, and no greater than
+        2000.
     max_matrix_symbol_size : float, default=220
         Maximum area of the optional matrix size overlay, in points
         squared.  Must not exceed 1600.
@@ -135,8 +146,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         matrix_cmap: str | plt.Colormap = "OrRd",
         vmin: float | None = None,
         vmax: float | None = None,
-        map_cmap: str | plt.Colormap | None = None,
-        max_centroid_size: float = 260.0,
+        map_cmap: str | plt.Colormap = "viridis",
+        centroid_size_range: tuple[float, float] = (30.0, 260.0),
         max_matrix_symbol_size: float = 220.0,
         line_color=None,
         origin_line_color="#2878B5",
@@ -148,6 +159,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         leader_linewidth: float = 1.25,
         show_labels: bool = True,
         label_fontsize: int = 9,
+        map_label_fontsize: int | None = None,
+        cbar_tick_fontsize: int | None = None,
+        cbar_label_fontsize: int | None = None,
         out_title: str = "Origins · row index",
         in_title: str = "Destinations · column index",
         title_fontsize: int = 13,
@@ -196,10 +210,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             )
 
         self.matrix_cmap = matrix_cmap
-        self.map_cmap = map_cmap if map_cmap is not None else matrix_cmap
-        self.max_centroid_size = self._validate_bounded_positive(
-            max_centroid_size,
-            "max_centroid_size",
+        self.map_cmap = map_cmap
+        self.centroid_size_range = self._validate_size_range(
+            centroid_size_range,
+            "centroid_size_range",
             self._MAX_CENTROID_SIZE,
         )
         self.max_matrix_symbol_size = self._validate_bounded_positive(
@@ -254,6 +268,16 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.map_title_pad = float(map_title_pad)
         if not np.isfinite(self.map_title_pad):
             raise ValueError("map_title_pad must be finite")
+        self.map_label_fontsize = (
+            map_label_fontsize if map_label_fontsize is not None else label_fontsize
+        )
+        self.cbar_tick_fontsize = (
+            cbar_tick_fontsize if cbar_tick_fontsize is not None
+            else max(label_fontsize - 1, 7)
+        )
+        self.cbar_label_fontsize = (
+            cbar_label_fontsize if cbar_label_fontsize is not None else label_fontsize
+        )
         self.origin_map_rect = self._validate_rect(
             origin_map_rect or self._DEFAULT_ORIGIN_RECT, "origin_map_rect",
         )
@@ -329,6 +353,23 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 f"{name} must not exceed {maximum:g}"
             )
         return value
+
+    @staticmethod
+    def _validate_size_range(size_range, name, maximum):
+        if len(size_range) != 2:
+            raise ValueError(f"{name} must contain two values")
+        size_range = tuple(float(value) for value in size_range)
+        if (
+            not np.all(np.isfinite(size_range))
+            or size_range[0] <= 0
+            or size_range[1] < size_range[0]
+        ):
+            raise ValueError(
+                f"{name} must be finite, positive, and increasing"
+            )
+        if size_range[1] > maximum:
+            raise ValueError(f"{name} must not exceed {maximum:g}")
+        return size_range
 
     @staticmethod
     def _validate_zones(zones, zone_id_col, name):
@@ -579,7 +620,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         values = np.asarray(
             [flow_totals.get(z, 0.0) for z in active_points], dtype=float,
         )
-        sizes = self._scale_sizes(values, self.max_centroid_size)
+        sizes = self._scale_sizes(values, self.centroid_size_range)
         coords = list(active_points.values())
         if coords:
             ax.scatter(
@@ -598,7 +639,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 ax,
                 active_points,
                 {z: str(z) for z in active_points},
-                fontsize=self.label_fontsize,
+                fontsize=self.map_label_fontsize,
             )
 
     def _draw_matrix(self, ax):
@@ -641,7 +682,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                     raw_sizes.append(size_value)
             if points:
                 scaled = self._scale_sizes(
-                    np.asarray(raw_sizes), self.max_matrix_symbol_size,
+                    np.asarray(raw_sizes),
+                    (
+                        min(self.max_matrix_symbol_size * 0.12, 30.0),
+                        self.max_matrix_symbol_size,
+                    ),
                 )
                 ax.scatter(
                     [p[0] for p in points],
@@ -662,11 +707,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         kwds = {"orientation": "vertical"}
         kwds.update(self.cbar_kwds)
         colorbar = fig.colorbar(self._im, cax=ax_colorbar, **kwds)
-        colorbar.ax.tick_params(labelsize=max(self.label_fontsize - 1, 7))
+        colorbar.ax.tick_params(labelsize=self.cbar_tick_fontsize)
         colorbar.outline.set_linewidth(0.6)
         colorbar.set_label(
             self.weight.capitalize(),
-            fontsize=self.label_fontsize,
+            fontsize=self.cbar_label_fontsize,
             color="#57606A",
         )
 
@@ -1781,11 +1826,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         }
 
     @staticmethod
-    def _scale_sizes(values, maximum):
+    def _scale_sizes(values, size_range):
         values = np.asarray(values, dtype=float)
         if values.size == 0:
             return values
-        minimum = min(maximum * 0.12, 30.0)
+        minimum, maximum = size_range
         if np.ptp(values) == 0:
             return np.full(values.shape, (minimum + maximum) / 2.0)
         return _linear_scaling(values, (minimum, maximum))

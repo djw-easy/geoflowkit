@@ -237,7 +237,12 @@ def test_layout_rectangles_control_map_matrix_and_colorbar_geometry():
 @pytest.mark.parametrize(
     ("keyword", "value", "message"),
     [
-        ("max_centroid_size", 2000.01, "must not exceed 2000"),
+        ("centroid_size_range", (30, 2000.01), "must not exceed 2000"),
+        (
+            "centroid_size_range",
+            (100, 30),
+            "must be finite, positive, and increasing",
+        ),
         ("max_matrix_symbol_size", 1600.01, "must not exceed 1600"),
         (
             "leader_width_range",
@@ -264,13 +269,14 @@ def test_visual_size_limits_accept_documented_boundaries():
     visualizer = MapTrixVisualizer(
         zones,
         zone_id_col="id",
-        max_centroid_size=2000,
+        centroid_size_range=(30, 2000),
         max_matrix_symbol_size=1600,
         leader_width_range=(0.8, 12),
         leader_linewidth=12,
     )
 
-    assert visualizer.max_centroid_size == 2000
+    assert visualizer.centroid_size_range == (30.0, 2000.0)
+    assert visualizer.map_cmap == "viridis"
     assert visualizer.max_matrix_symbol_size == 1600
     assert visualizer.leader_width_range == (0.8, 12.0)
     assert visualizer.leader_linewidth == 12
