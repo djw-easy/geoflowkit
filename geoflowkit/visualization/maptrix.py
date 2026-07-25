@@ -83,9 +83,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         Horizontal gap, in figure coordinates, between a map and the
         bend rail for its leaders.
     min_leader_gap : float, default=12
-        Minimum desired vertical separation between adjacent map sites,
-        in display pixels.  A site and its proportional symbol are moved
-        together and remain inside the corresponding zone.
+        Desired minimum visible gap between parallel diagonal segments,
+        in display pixels and excluding their stroke widths.  It is a
+        capped max-min objective: crossings remain forbidden even when
+        this gap cannot be reached.  For legacy routing it controls the
+        vertical separation between adjacent map sites.
     cbar_kwds : dict, optional
         Extra keyword arguments for the matrix colorbar.
 
@@ -637,6 +639,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             self.zone_id_col,
             origin_ports,
             "origin",
+            self._outflows,
         )
         destination_group = self._build_route_options(
             fig,
@@ -647,6 +650,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             self.dest_zone_id_col,
             destination_ports,
             "destination",
+            self._inflows,
         )
         if self._same_entity_set:
             ids = list(self.row_order_)
@@ -699,6 +703,16 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         column_order = self._order_from_assignment(
             list(self.column_order_), destination_assignment,
         )
+        origin_assignment = self._solve_port_site_assignment(
+            list(self.row_order_),
+            [origin_group],
+            fixed_order=row_order,
+        )
+        destination_assignment = self._solve_port_site_assignment(
+            list(self.column_order_),
+            [destination_group],
+            fixed_order=column_order,
+        )
         self._fixed_layout_solution = {
             "origin": self._routes_from_assignment(
                 origin_assignment,
@@ -733,6 +747,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             ),
             "band": "up" if delta_y > 0 else "down",
             "slope": float(-gradient),
+            "display_slope": float(gradient),
         }
 
     def _build_route_options(
@@ -745,10 +760,12 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         zone_id_col,
         ports,
         kind,
+        flow_totals,
     ):
         """Create fixed-slope candidates for every zone/port pairing."""
         prepared = _prepare_zones(zones, zone_id_col=zone_id_col)
         geometries = dict(zip(prepared["zone_id"], prepared.geometry))
+        width_map = self._leader_width_map(ids, flow_totals)
         options = {}
 
         for zone_id in ids:
@@ -805,6 +822,13 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                             "line": LineString(route["path"]),
                             "band": route["band"],
                             "slope": route["slope"],
+                            "diagonal_intercept": float(
+                                site_display[1]
+                                - route["display_slope"] * site_display[0]
+                            ),
+                            "linewidth_px": float(
+                                width_map[zone_id] * fig.dpi / 72.0
+                            ),
                             "score": displacement
                             + 0.03 * route["length"],
                         }
@@ -1010,6 +1034,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         scale = max(float(costs.max()), 1.0)
         costs = costs / scale
 
+        if fixed_order is not None:
+            return self._solve_spaced_fixed_assignment(
+                variables, base, costs, ids,
+            )
+
         for _ in range(500):
             constraint_count = count * 2 + len(conflict_pairs)
             matrix = lil_matrix(
@@ -1100,6 +1129,133 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             "No crossing-free fixed-slope MapTrix layout was found. "
             "Adjust leader_angle, layout rectangles, or site_grid_size."
         )
+
+    def _solve_spaced_fixed_assignment(
+        self, variables, base, costs, ids,
+    ):
+        """Maximise the minimum same-band clearance without crossings."""
+        count = len(ids)
+        hard_conflicts = set()
+        clearances = {}
+        for first_index, first in enumerate(variables):
+            first_zone = first["routes"][0]["zone_id"]
+            for second_index in range(first_index + 1, len(variables)):
+                second = variables[second_index]
+                if first_zone == second["routes"][0]["zone_id"]:
+                    continue
+                pair = (first_index, second_index)
+                if any(
+                    first_route["line"].intersects(second_route["line"])
+                    for first_route, second_route in zip(
+                        first["routes"], second["routes"]
+                    )
+                ):
+                    hard_conflicts.add(pair)
+                clearance = self._entry_diagonal_clearance(first, second)
+                if np.isfinite(clearance):
+                    clearances[pair] = clearance
+
+        def solve(conflicts):
+            constraint_count = count * 2 + len(conflicts)
+            matrix = lil_matrix(
+                (constraint_count, len(variables)), dtype=float,
+            )
+            matrix[: count * 2] = base
+            lower = np.concatenate(
+                [np.ones(count * 2), np.full(len(conflicts), -np.inf)]
+            )
+            upper = np.ones(constraint_count)
+            for row, (first, second) in enumerate(
+                sorted(conflicts), start=count * 2,
+            ):
+                matrix[row, first] = 1.0
+                matrix[row, second] = 1.0
+            result = milp(
+                c=costs,
+                integrality=np.ones(len(variables)),
+                bounds=Bounds(
+                    np.zeros(len(variables)), np.ones(len(variables)),
+                ),
+                constraints=LinearConstraint(
+                    matrix.tocsr(), lower, upper,
+                ),
+                options={"time_limit": 20.0},
+            )
+            if not result.success or result.x is None:
+                return None
+            return np.flatnonzero(result.x > 0.5).tolist()
+
+        chosen = solve(hard_conflicts)
+        if chosen is None:
+            raise RuntimeError(
+                "No crossing-free fixed-slope MapTrix layout was found."
+            )
+
+        current_gap = self._selected_minimum_clearance(
+            chosen, variables,
+        )
+        target_gap = max(float(self.min_leader_gap), 0.0)
+        if not np.isfinite(current_gap) or current_gap >= target_gap:
+            return self._assignment_from_indices(chosen, variables)
+
+        low = current_gap
+        high = target_gap
+        best = chosen
+        for _ in range(10):
+            threshold = (low + high) / 2.0
+            spacing_conflicts = {
+                pair
+                for pair, clearance in clearances.items()
+                if clearance < threshold
+            }
+            candidate = solve(hard_conflicts | spacing_conflicts)
+            if candidate is None:
+                high = threshold
+            else:
+                low = threshold
+                best = candidate
+
+        return self._assignment_from_indices(best, variables)
+
+    def _entry_diagonal_clearance(self, first, second):
+        """Return the minimum visible gap between parallel diagonals."""
+        gaps = []
+        for first_route, second_route in zip(
+            first["routes"], second["routes"]
+        ):
+            if first_route["band"] != second_route["band"]:
+                continue
+            center_distance = abs(
+                first_route["diagonal_intercept"]
+                - second_route["diagonal_intercept"]
+            ) / np.sqrt(self.leader_slope ** 2 + 1.0)
+            gaps.append(
+                center_distance
+                - 0.5
+                * (
+                    first_route["linewidth_px"]
+                    + second_route["linewidth_px"]
+                )
+            )
+        return min(gaps) if gaps else np.inf
+
+    def _selected_minimum_clearance(self, chosen, variables):
+        gaps = []
+        for position, first_index in enumerate(chosen):
+            for second_index in chosen[position + 1:]:
+                clearance = self._entry_diagonal_clearance(
+                    variables[first_index], variables[second_index],
+                )
+                if np.isfinite(clearance):
+                    gaps.append(clearance)
+        return min(gaps) if gaps else np.inf
+
+    @staticmethod
+    def _assignment_from_indices(chosen, variables):
+        return {
+            entry["routes"][0]["zone_id"]: entry
+            for entry in (variables[index] for index in chosen)
+        }
 
     @staticmethod
     def _order_from_assignment(ids, assignment):
@@ -1389,6 +1545,35 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             "h": float(box.height),
         }
 
+    @staticmethod
+    def _exported_minimum_diagonal_gap(fig, leaders):
+        gaps = []
+        for index, first in enumerate(leaders):
+            if first["band"] is None:
+                continue
+            first_intercept = (
+                first["site"]["y"]
+                - first["slope"] * first["site"]["x"]
+            )
+            for second in leaders[index + 1:]:
+                if first["band"] != second["band"]:
+                    continue
+                second_intercept = (
+                    second["site"]["y"]
+                    - second["slope"] * second["site"]["x"]
+                )
+                center_distance = abs(
+                    first_intercept - second_intercept
+                ) / np.sqrt(first["slope"] ** 2 + 1.0)
+                stroke_radius = (
+                    0.5
+                    * (first["linewidth"] + second["linewidth"])
+                    * fig.dpi
+                    / 72.0
+                )
+                gaps.append(center_distance - stroke_radius)
+        return float(min(gaps)) if gaps else None
+
     def _export_layout(self, fig, ax_origin, ax_destination, ax_matrix):
         rows, cols = self.matrix_.shape
         origin_leaders = []
@@ -1458,6 +1643,14 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             "same_entity_set": self._same_entity_set,
             "leader_routing": self.leader_routing,
             "leader_angle": self.leader_angle,
+            "minimum_diagonal_gap": {
+                "origin": self._exported_minimum_diagonal_gap(
+                    fig, origin_leaders,
+                ),
+                "destination": self._exported_minimum_diagonal_gap(
+                    fig, destination_leaders,
+                ),
+            },
         }
 
     @staticmethod

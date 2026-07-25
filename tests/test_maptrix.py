@@ -96,6 +96,8 @@ def test_same_entity_set_uses_shared_order_and_non_crossing_leaders():
 
     assert layout["leader_routing"] == "diagonal-horizontal"
     assert layout["leader_angle"] == 45.0
+    assert layout["minimum_diagonal_gap"]["origin"] >= 11.9
+    assert layout["minimum_diagonal_gap"]["destination"] >= 11.9
 
     for group in (
         layout["origin_leaders"], layout["destination_leaders"],
@@ -158,11 +160,33 @@ def test_previous_horizontal_diagonal_routing_remains_available():
     layout = visualizer.layout_
 
     assert layout["leader_routing"] == "horizontal-diagonal"
+    assert layout["minimum_diagonal_gap"] == {
+        "origin": None,
+        "destination": None,
+    }
     for leader in layout["origin_leaders"] + layout["destination_leaders"]:
         assert np.isclose(leader["site"]["y"], leader["bend"]["y"])
         assert np.isclose(leader["linewidth"], 2.25)
         assert leader["band"] is None
         assert leader["slope"] is None
+    _assert_group_has_no_crossings(layout["origin_leaders"])
+    _assert_group_has_no_crossings(layout["destination_leaders"])
+    plt.close(fig)
+
+
+def test_unreachable_spacing_target_never_relaxes_non_crossing():
+    zones, flows = _same_set_fixture()
+    visualizer = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        min_leader_gap=1000,
+        show_labels=False,
+    )
+    fig = visualizer.fit_plot(flows, figsize=(12, 8))
+    layout = visualizer.layout_
+
+    assert layout["minimum_diagonal_gap"]["origin"] < 1000
+    assert layout["minimum_diagonal_gap"]["destination"] < 1000
     _assert_group_has_no_crossings(layout["origin_leaders"])
     _assert_group_has_no_crossings(layout["destination_leaders"])
     plt.close(fig)

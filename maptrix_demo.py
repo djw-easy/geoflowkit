@@ -88,4 +88,8 @@ print(
 print(f'  Shared row/column order: {layout["same_entity_set"]}')
 print(f'  Row order: {layout["row_order"]}')
 print(f'  Column order: {layout["column_order"]}')
+print(
+    '  Minimum diagonal gaps (px): '
+    f'{layout["minimum_diagonal_gap"]}'
+)
 print('Saved: maptrix_demo.png')
