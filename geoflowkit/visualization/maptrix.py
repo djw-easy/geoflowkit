@@ -48,6 +48,15 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     map_label_fontsize : int, optional
         Font size for zone labels on the maps.  Defaults to
         ``label_fontsize``.
+    matrix_label_fontsize : int, optional
+        Font size for origin and destination zone labels on the two matrix
+        edges without leader lines.  Defaults to ``label_fontsize``.
+    origin_matrix_label_rotation : float, default=-45
+        Rotation angle, in degrees, for origin labels on the matrix's
+        leader-free row edge.
+    destination_matrix_label_rotation : float, default=45
+        Rotation angle, in degrees, for destination labels on the matrix's
+        leader-free column edge.
     cbar_tick_fontsize : int, optional
         Font size for colorbar tick labels.  Defaults to
         ``max(label_fontsize - 1, 7)``.
@@ -93,12 +102,21 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     origin_map_rect, destination_map_rect, matrix_rect, colorbar_rect :
         tuple of four floats, optional
         ``(left, bottom, width, height)`` in normalized figure
-        coordinates.  Map width/height directly control map size.  The
-        horizontal map-to-matrix gap is ``matrix_rect.left`` minus the
+        coordinates.  When ``layout_rect`` is provided, these values become
+        logical layout coordinates and their joint bounding box is mapped
+        into ``layout_rect``.  Map width/height directly control map size.
+        The horizontal map-to-matrix gap is ``matrix_rect.left`` minus the
         maps' right edge; it may be negative when the axes rectangles
         intentionally overlap.  ``colorbar_rect`` controls both colorbar
         distance and length.  Defaults follow the proportions in
         ``maptrix-static-layout-spec.md``.
+    layout_rect : tuple of four floats, optional
+        Target ``(left, bottom, width, height)`` region in normalized figure
+        coordinates.  When provided, the four component rectangles are
+        treated as one relative layout: their joint bounding box is
+        independently scaled in x and y to fill this target region.  When
+        omitted, component rectangles retain their original absolute figure
+        coordinate semantics.
     corridor_gap : float, default=0.018
         Horizontal gap, in figure coordinates, between a map and the
         bend rail for its leaders.
@@ -160,6 +178,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         show_labels: bool = True,
         label_fontsize: int = 9,
         map_label_fontsize: int | None = None,
+        matrix_label_fontsize: int | None = None,
+        origin_matrix_label_rotation: float = -25.0,
+        destination_matrix_label_rotation: float = 25.0,
         cbar_tick_fontsize: int | None = None,
         cbar_label_fontsize: int | None = None,
         out_title: str = "Origins · row index",
@@ -171,6 +192,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         destination_map_rect: tuple[float, float, float, float] | None = None,
         matrix_rect: tuple[float, float, float, float] | None = None,
         colorbar_rect: tuple[float, float, float, float] | None = None,
+        layout_rect: tuple[float, float, float, float] | None = None,
         corridor_gap: float = 0.018,
         min_leader_gap: float = 12.0,
         site_grid_size: int = 7,
@@ -271,6 +293,25 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.map_label_fontsize = (
             map_label_fontsize if map_label_fontsize is not None else label_fontsize
         )
+        self.matrix_label_fontsize = (
+            matrix_label_fontsize
+            if matrix_label_fontsize is not None
+            else label_fontsize
+        )
+        self.origin_matrix_label_rotation = float(
+            origin_matrix_label_rotation
+        )
+        self.destination_matrix_label_rotation = float(
+            destination_matrix_label_rotation
+        )
+        if not np.isfinite(self.origin_matrix_label_rotation):
+            raise ValueError(
+                "origin_matrix_label_rotation must be finite"
+            )
+        if not np.isfinite(self.destination_matrix_label_rotation):
+            raise ValueError(
+                "destination_matrix_label_rotation must be finite"
+            )
         self.cbar_tick_fontsize = (
             cbar_tick_fontsize if cbar_tick_fontsize is not None
             else max(label_fontsize - 1, 7)
@@ -278,19 +319,39 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.cbar_label_fontsize = (
             cbar_label_fontsize if cbar_label_fontsize is not None else label_fontsize
         )
-        self.origin_map_rect = self._validate_rect(
-            origin_map_rect or self._DEFAULT_ORIGIN_RECT, "origin_map_rect",
+        configured_rects = {
+            "origin_map": self._validate_rect(
+                origin_map_rect or self._DEFAULT_ORIGIN_RECT,
+                "origin_map_rect",
+            ),
+            "destination_map": self._validate_rect(
+                destination_map_rect or self._DEFAULT_DESTINATION_RECT,
+                "destination_map_rect",
+            ),
+            "matrix": self._validate_rect(
+                matrix_rect or self._DEFAULT_MATRIX_RECT,
+                "matrix_rect",
+            ),
+            "colorbar": self._validate_rect(
+                colorbar_rect or self._DEFAULT_COLORBAR_RECT,
+                "colorbar_rect",
+            ),
+        }
+        self._configured_rects = configured_rects
+        self.layout_rect = (
+            self._validate_rect(layout_rect, "layout_rect")
+            if layout_rect is not None
+            else None
         )
-        self.destination_map_rect = self._validate_rect(
-            destination_map_rect or self._DEFAULT_DESTINATION_RECT,
-            "destination_map_rect",
+        resolved_rects = (
+            self._map_rects_to_layout(configured_rects, self.layout_rect)
+            if self.layout_rect is not None
+            else dict(configured_rects)
         )
-        self.matrix_rect = self._validate_rect(
-            matrix_rect or self._DEFAULT_MATRIX_RECT, "matrix_rect",
-        )
-        self.colorbar_rect = self._validate_rect(
-            colorbar_rect or self._DEFAULT_COLORBAR_RECT, "colorbar_rect",
-        )
+        self.origin_map_rect = resolved_rects["origin_map"]
+        self.destination_map_rect = resolved_rects["destination_map"]
+        self.matrix_rect = resolved_rects["matrix"]
+        self.colorbar_rect = resolved_rects["colorbar"]
         destination_top = (
             self.destination_map_rect[1] + self.destination_map_rect[3]
         )
@@ -342,6 +403,33 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         if min(rect) < 0 or rect[0] + rect[2] > 1 or rect[1] + rect[3] > 1:
             raise ValueError(f"{name} must fit inside normalized figure coordinates")
         return rect
+
+    @staticmethod
+    def _map_rects_to_layout(rects, layout_rect):
+        """Map a group of logical rectangles into one figure region."""
+        logical_left = min(rect[0] for rect in rects.values())
+        logical_bottom = min(rect[1] for rect in rects.values())
+        logical_right = max(
+            rect[0] + rect[2] for rect in rects.values()
+        )
+        logical_top = max(
+            rect[1] + rect[3] for rect in rects.values()
+        )
+        logical_width = logical_right - logical_left
+        logical_height = logical_top - logical_bottom
+        target_left, target_bottom, target_width, target_height = layout_rect
+        scale_x = target_width / logical_width
+        scale_y = target_height / logical_height
+
+        return {
+            name: (
+                target_left + (rect[0] - logical_left) * scale_x,
+                target_bottom + (rect[1] - logical_bottom) * scale_y,
+                rect[2] * scale_x,
+                rect[3] * scale_y,
+            )
+            for name, rect in rects.items()
+        }
 
     @staticmethod
     def _validate_bounded_positive(value, name, maximum):
@@ -699,9 +787,60 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                     zorder=6,
                 )
 
+        if self.show_labels:
+            self._draw_matrix_labels(ax, transform)
+
         for spine in ax.spines.values():
             spine.set_visible(False)
         return im, transform
+
+    def _draw_matrix_labels(self, ax, transform):
+        """Label the two matrix edges opposite the leader-line edges."""
+        rows, cols = self.matrix_.shape
+
+        # Origin leaders terminate on the left row edge, so origin names are
+        # placed on the opposite (right) row edge and extend outwards.
+        for row, label in enumerate(self.row_order_):
+            point = _calculate_rotated_point(
+                transform, rows, row, cols - 0.5,
+            )
+            ax.annotate(
+                str(label),
+                xy=point,
+                xytext=(4, -4),
+                textcoords="offset points",
+                fontsize=self.matrix_label_fontsize,
+                color="#24292F",
+                rotation=self.origin_matrix_label_rotation,
+                rotation_mode="anchor",
+                ha="left",
+                va="top",
+                clip_on=False,
+                annotation_clip=False,
+                zorder=8,
+            )
+
+        # Destination leaders terminate on the bottom column edge, so
+        # destination names are placed on the opposite (top) column edge.
+        for col, label in enumerate(self.column_order_):
+            point = _calculate_rotated_point(
+                transform, rows, -0.5, col,
+            )
+            ax.annotate(
+                str(label),
+                xy=point,
+                xytext=(4, 4),
+                textcoords="offset points",
+                fontsize=self.matrix_label_fontsize,
+                color="#24292F",
+                rotation=self.destination_matrix_label_rotation,
+                rotation_mode="anchor",
+                ha="left",
+                va="bottom",
+                clip_on=False,
+                annotation_clip=False,
+                zorder=8,
+            )
 
     def _draw_colorbar(self, fig, ax_colorbar):
         kwds = {"orientation": "vertical"}
@@ -1775,13 +1914,26 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 "colorbar": colorbar_axes_rect,
             },
             "configured_rects": {
+                **self._configured_rects,
+            },
+            "resolved_rects": {
                 "origin_map": self.origin_map_rect,
                 "destination_map": self.destination_map_rect,
                 "matrix": self.matrix_rect,
                 "colorbar": self.colorbar_rect,
             },
+            "layout_rect": self.layout_rect,
             "layout_gaps": {
                 "configured_map_to_matrix": float(
+                    self._configured_rects["matrix"][0]
+                    - max(
+                        self._configured_rects["origin_map"][0]
+                        + self._configured_rects["origin_map"][2],
+                        self._configured_rects["destination_map"][0]
+                        + self._configured_rects["destination_map"][2],
+                    )
+                ),
+                "resolved_map_to_matrix": float(
                     self.matrix_rect[0]
                     - max(
                         self.origin_map_rect[0]

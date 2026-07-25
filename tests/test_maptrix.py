@@ -10,6 +10,7 @@ from shapely.geometry import LineString, box
 
 from geoflowkit import FlowDataFrame, flows_from_od
 from geoflowkit.visualization import MapTrixVisualizer
+from geoflowkit.visualization._utils import _calculate_rotated_point
 
 
 def _flow_dataframe(origins, destinations):
@@ -148,6 +149,81 @@ def test_same_entity_set_uses_shared_order_and_non_crossing_leaders():
     plt.close(fig)
 
 
+def test_matrix_labels_use_ordered_zone_names_on_leader_free_edges():
+    zones, flows = _same_set_fixture()
+    visualizer = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        matrix_label_fontsize=11,
+        origin_matrix_label_rotation=-30,
+        destination_matrix_label_rotation=60,
+    )
+    fig = visualizer.fit_plot(flows, figsize=(12, 8))
+    labels = visualizer.axes_["matrix"].texts
+    row_count = len(visualizer.row_order_)
+
+    assert [label.get_text() for label in labels[:row_count]] == [
+        str(zone_id) for zone_id in visualizer.row_order_
+    ]
+    assert [label.get_text() for label in labels[row_count:]] == [
+        str(zone_id) for zone_id in visualizer.column_order_
+    ]
+    assert {label.get_fontsize() for label in labels} == {11.0}
+    assert {label.get_rotation() for label in labels[:row_count]} == {330.0}
+    assert {label.get_rotation() for label in labels[row_count:]} == {60.0}
+
+    rows, cols = visualizer.matrix_.shape
+    expected_row_points = [
+        _calculate_rotated_point(
+            visualizer._transform, rows, row, cols - 0.5,
+        )
+        for row in range(rows)
+    ]
+    expected_column_points = [
+        _calculate_rotated_point(
+            visualizer._transform, rows, -0.5, col,
+        )
+        for col in range(cols)
+    ]
+    assert np.allclose(
+        [label.xy for label in labels[:row_count]], expected_row_points,
+    )
+    assert np.allclose(
+        [label.xy for label in labels[row_count:]], expected_column_points,
+    )
+    plt.close(fig)
+
+
+def test_matrix_labels_follow_show_labels_setting():
+    zones, flows = _same_set_fixture()
+    visualizer = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        show_labels=False,
+    )
+    fig = visualizer.fit_plot(flows, figsize=(12, 8))
+
+    assert len(visualizer.axes_["matrix"].texts) == 0
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "keyword",
+    [
+        "origin_matrix_label_rotation",
+        "destination_matrix_label_rotation",
+    ],
+)
+def test_matrix_label_rotations_must_be_finite(keyword):
+    zones, _ = _same_set_fixture()
+    with pytest.raises(ValueError, match=f"{keyword} must be finite"):
+        MapTrixVisualizer(
+            zones,
+            zone_id_col="id",
+            **{keyword: np.nan},
+        )
+
+
 def test_previous_horizontal_diagonal_routing_remains_available():
     zones, flows = _same_set_fixture()
     visualizer = MapTrixVisualizer(
@@ -231,6 +307,69 @@ def test_layout_rectangles_control_map_matrix_and_colorbar_geometry():
     assert visualizer.axes_["origin"].yaxis.labelpad == 24
     assert visualizer.axes_["matrix"].get_title() == ""
     assert visualizer.axes_["matrix"].patch.get_alpha() == 0.0
+    plt.close(fig)
+
+
+def test_layout_rect_maps_logical_rectangles_into_target_region():
+    zones, flows = _same_set_fixture()
+    logical_rects = {
+        "origin_map": (0.04, 0.56, 0.385, 0.36),
+        "destination_map": (0.04, 0.08, 0.385, 0.36),
+        "matrix": (0.346, 0.08, 0.525, 0.84),
+        "colorbar": (0.87, 0.13, 0.014, 0.74),
+    }
+    layout_rect = (0.02, 0.04, 0.90, 0.92)
+    visualizer = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        origin_map_rect=logical_rects["origin_map"],
+        destination_map_rect=logical_rects["destination_map"],
+        matrix_rect=logical_rects["matrix"],
+        colorbar_rect=logical_rects["colorbar"],
+        layout_rect=layout_rect,
+        leader_routing="horizontal-diagonal",
+        show_labels=False,
+    )
+
+    resolved = {
+        "origin_map": visualizer.origin_map_rect,
+        "destination_map": visualizer.destination_map_rect,
+        "matrix": visualizer.matrix_rect,
+        "colorbar": visualizer.colorbar_rect,
+    }
+    left = min(rect[0] for rect in resolved.values())
+    bottom = min(rect[1] for rect in resolved.values())
+    right = max(rect[0] + rect[2] for rect in resolved.values())
+    top = max(rect[1] + rect[3] for rect in resolved.values())
+    assert np.allclose(
+        (left, bottom, right - left, top - bottom), layout_rect,
+    )
+    assert np.isclose(
+        resolved["colorbar"][0] + resolved["colorbar"][2],
+        layout_rect[0] + layout_rect[2],
+    )
+
+    fig = visualizer.fit_plot(flows, figsize=(12, 8))
+    layout = visualizer.layout_
+    assert layout["configured_rects"] == logical_rects
+    assert layout["resolved_rects"] == resolved
+    assert layout["layout_rect"] == layout_rect
+    logical_gap = (
+        logical_rects["matrix"][0]
+        - logical_rects["origin_map"][0]
+        - logical_rects["origin_map"][2]
+    )
+    scale_x = layout_rect[2] / (
+        max(rect[0] + rect[2] for rect in logical_rects.values())
+        - min(rect[0] for rect in logical_rects.values())
+    )
+    assert np.isclose(
+        layout["layout_gaps"]["configured_map_to_matrix"], logical_gap,
+    )
+    assert np.isclose(
+        layout["layout_gaps"]["resolved_map_to_matrix"],
+        logical_gap * scale_x,
+    )
     plt.close(fig)
 
 

@@ -4,9 +4,10 @@ This script demonstrates how to:
 1. Load flow data from CSV and border polygons from GeoPackage
 2. Sample flows and clip to the city boundary
 3. Create a centred MapTrix matrix with diagonal-horizontal leaders
-4. Adjust map size, map-to-matrix gap, and colorbar geometry
-5. Encode regional totals with bounded leader/marker sizes
-6. Inspect the exported static layout geometry
+4. Label the two leader-free matrix edges with district names
+5. Adjust map size, map-to-matrix gap, and colorbar geometry
+6. Encode regional totals with bounded leader/marker sizes
+7. Inspect the exported static layout geometry
 
 Usage:
     python examples/maptrix_demo.py
@@ -77,13 +78,18 @@ visualizer = MapTrixVisualizer(
     origin_map_rect=(0.04, 0.56, 0.385, 0.36),
     destination_map_rect=(0.04, 0.08, 0.385, 0.36),
     matrix_rect=(0.346, 0.08, 0.525, 0.84),
-    colorbar_rect=(0.85, 0.13, 0.014, 0.74),
+    colorbar_rect=(0.87, 0.13, 0.014, 0.74),
+    layout_rect=(0.02, 0.03, 0.94, 0.93),
     show_labels=True,
     label_fontsize=8,
+    matrix_label_fontsize=8,
+    cbar_label_fontsize=9,
+    origin_matrix_label_rotation=-0,
+    destination_matrix_label_rotation=0,
     out_title='Origins · district outflow',
     in_title='Destinations · district inflow',
     title_fontsize=12,
-    map_title_pad=10,
+    map_title_pad=5,
     include_self_flows=False,
 )
 fig = visualizer.fit_plot(fdf_sample, figsize=(16, 9))
