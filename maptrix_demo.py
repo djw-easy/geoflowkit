@@ -3,8 +3,9 @@
 This script demonstrates how to:
 1. Load flow data from CSV and border polygons from GeoPackage
 2. Sample flows and clip to the city boundary
-3. Create a centred MapTrix matrix with non-crossing row/column leaders
-4. Inspect the exported static layout geometry
+3. Create a centred MapTrix matrix with diagonal-horizontal leaders
+4. Encode regional totals with leader width
+5. Inspect the exported static layout geometry
 
 Usage:
     python maptrix_demo.py
@@ -65,7 +66,9 @@ visualizer = MapTrixVisualizer(
     origin_line_color='#2878B5',
     destination_line_color='#D97706',
     line_alpha=0.72,
-    leader_linewidth=1.25,
+    leader_routing='diagonal-horizontal',
+    leader_angle=45,
+    leader_width_range=(0.9, 4.8),
     show_labels=True,
     label_fontsize=8,
     out_title='Origins · district outflow',
@@ -83,4 +86,6 @@ print(
     f'{len(layout["destination_leaders"])} column leaders'
 )
 print(f'  Shared row/column order: {layout["same_entity_set"]}')
+print(f'  Row order: {layout["row_order"]}')
+print(f'  Column order: {layout["column_order"]}')
 print('Saved: maptrix_demo.png')

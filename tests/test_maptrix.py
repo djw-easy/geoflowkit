@@ -34,12 +34,16 @@ def _same_set_fixture():
         crs="EPSG:3857",
     )
     origins = [
-        (0.5, 2.5), (0.5, 2.5), (1.7, 2.5), (1.7, 2.5),
-        (0.5, 0.5), (0.5, 0.5), (1.7, 0.5), (1.7, 0.5),
+        (0.5, 2.5),
+        (1.7, 2.5), (1.7, 2.5),
+        (0.5, 0.5), (0.5, 0.5), (0.5, 0.5),
+        (1.7, 0.5), (1.7, 0.5), (1.7, 0.5), (1.7, 0.5),
     ]
     destinations = [
-        (1.7, 2.5), (0.5, 0.5), (0.5, 2.5), (1.7, 0.5),
-        (0.5, 2.5), (1.7, 0.5), (1.7, 2.5), (0.5, 0.5),
+        (1.7, 2.5),
+        (0.5, 2.5), (0.5, 0.5),
+        (0.5, 2.5), (1.7, 2.5), (1.7, 0.5),
+        (0.5, 2.5), (1.7, 2.5), (0.5, 0.5), (0.5, 2.5),
     ]
     return zones, _flow_dataframe(origins, destinations)
 
@@ -76,7 +80,89 @@ def test_same_entity_set_uses_shared_order_and_non_crossing_leaders():
 
     for leader in layout["origin_leaders"] + layout["destination_leaders"]:
         assert leader["path"][-1] == leader["port"]
+        assert np.isclose(leader["bend"]["y"], leader["port"]["y"])
+        assert leader["site"]["x"] < leader["bend"]["x"]
+        assert leader["bend"]["x"] < leader["port"]["x"]
+        diagonal_slope = (
+            leader["bend"]["y"] - leader["site"]["y"]
+        ) / (
+            leader["bend"]["x"] - leader["site"]["x"]
+        )
+        assert np.isclose(diagonal_slope, leader["slope"])
+        assert np.isclose(
+            abs(diagonal_slope), np.tan(np.radians(45.0)),
+        )
+        assert leader["band"] in {"up", "down"}
 
+    assert layout["leader_routing"] == "diagonal-horizontal"
+    assert layout["leader_angle"] == 45.0
+
+    for group in (
+        layout["origin_leaders"], layout["destination_leaders"],
+    ):
+        for band in ("up", "down"):
+            slopes = {
+                round(leader["slope"], 10)
+                for leader in group
+                if leader["band"] == band
+            }
+            assert len(slopes) <= 1
+
+    # A leader starts at the exact final site used by the proportional
+    # symbol.  Site separation, when needed, moves both together.
+    for group, axis_name, points in [
+        (layout["origin_leaders"], "origin", visualizer.o_sites_),
+        (layout["destination_leaders"], "destination", visualizer.d_sites_),
+    ]:
+        ax = visualizer.axes_[axis_name]
+        symbol_offsets = np.asarray(ax.collections[-1].get_offsets())
+        assert {
+            tuple(point) for point in symbol_offsets
+        } == {
+            tuple(points[zone_id]) for zone_id in layout["row_order"]
+        }
+        for leader in group:
+            display_x, display_y = ax.transData.transform(points[leader["id"]])
+            assert np.isclose(leader["site"]["x"], display_x)
+            assert np.isclose(
+                leader["site"]["y"], fig.bbox.height - display_y,
+            )
+
+    origin_widths = {
+        leader["id"]: leader["linewidth"]
+        for leader in layout["origin_leaders"]
+    }
+    ordered_by_flow = sorted(visualizer._outflows, key=visualizer._outflows.get)
+    assert [
+        origin_widths[zone_id] for zone_id in ordered_by_flow
+    ] == sorted(origin_widths.values())
+    assert np.isclose(min(origin_widths.values()), 0.8)
+    assert np.isclose(max(origin_widths.values()), 4.5)
+
+    _assert_group_has_no_crossings(layout["origin_leaders"])
+    _assert_group_has_no_crossings(layout["destination_leaders"])
+    plt.close(fig)
+
+
+def test_previous_horizontal_diagonal_routing_remains_available():
+    zones, flows = _same_set_fixture()
+    visualizer = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        leader_routing="horizontal-diagonal",
+        leader_width_range=None,
+        leader_linewidth=2.25,
+        show_labels=False,
+    )
+    fig = visualizer.fit_plot(flows, figsize=(12, 8))
+    layout = visualizer.layout_
+
+    assert layout["leader_routing"] == "horizontal-diagonal"
+    for leader in layout["origin_leaders"] + layout["destination_leaders"]:
+        assert np.isclose(leader["site"]["y"], leader["bend"]["y"])
+        assert np.isclose(leader["linewidth"], 2.25)
+        assert leader["band"] is None
+        assert leader["slope"] is None
     _assert_group_has_no_crossings(layout["origin_leaders"])
     _assert_group_has_no_crossings(layout["destination_leaders"])
     plt.close(fig)
@@ -111,6 +197,7 @@ def test_different_entity_sets_keep_independent_rectangular_axes():
         dest_zones=destination_zones,
         zone_id_col="id",
         dest_zone_id_col="id",
+        leader_angle=35,
         show_labels=False,
     )
     fig = visualizer.fit_plot(flows, figsize=(12, 8))
@@ -124,6 +211,11 @@ def test_different_entity_sets_keep_independent_rectangular_axes():
     assert len(layout["column_ports"]) == 2
     assert layout["matrix"]["rows"] == 3
     assert layout["matrix"]["columns"] == 2
+    assert layout["leader_angle"] == 35.0
+    for leader in layout["origin_leaders"] + layout["destination_leaders"]:
+        assert np.isclose(
+            abs(leader["slope"]), np.tan(np.radians(35.0)),
+        )
     _assert_group_has_no_crossings(layout["origin_leaders"])
     _assert_group_has_no_crossings(layout["destination_leaders"])
     plt.close(fig)

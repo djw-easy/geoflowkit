@@ -10,6 +10,7 @@ setup(
         "pandas",
         "geopandas>=1.0.1",
         "matplotlib",
+        "scipy>=1.9",
         "scikit-learn",
         "tqdm",
         "numba",

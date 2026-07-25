@@ -95,14 +95,14 @@ type StaticMapTrixLayout = {
 
 ```text
                origin map                     rotated OD matrix
-            ┌─────────────┐                    ╱──────────╲
-            │             │-- row leaders -\  ╱             ╲
-            │             │                 \╱               ╲ 
-            └─────────────┘                 ╱                 ╲   
-                                            ╲                 ╱
-            ┌─────────────┐                  ╲               ╱
-            │ destination │                 / ╲             ╱
-            │     map     │-- col leaders -/   ╲──────────╱
+            ┌─────────────┐                     ╱──────────╲
+            │             │ -- row leaders --> ╱            ╲
+            │             │                    ╲            ╱
+            └─────────────┘                     ╲──────────╱
+
+            ┌─────────────┐ -- column leaders ->
+            │ destination │
+            │     map     │
             └─────────────┘
 ```
 
@@ -258,18 +258,19 @@ function portsOnSide(ids: string[], start: Point, end: Point): Map<string, Point
 
 对于 `k` 条同组 leader，按 order 编号 `0..k-1`。若任意相邻 leader 的顺序不交换，则不存在同组交叉。完整 one-sided boundary labeling 正是在求满足这个条件且路径较短的端口匹配。
 
-建议使用两段路径：
+建议使用论文中的两段路径。这里的 `bend` 是同一条 leader 的**折点**，不是两条不同 leader 的交叉点：
 
 ```text
-site -- horizontal segment -- bend -- diagonal segment -- port
+site -- diagonal segment -- bend -- horizontal segment -- port
 ```
 
 ```ts
 function routeLeader(site: Point, port: Point, slope: number): Point[] {
   // 斜段的斜率为 slope；符号由该 leader 所属的 up/down band 决定。
+  // bend 与 port 有相同 y，因此第二段严格水平。
   const bend = {
-    x: port.x - (port.y - site.y) / slope,
-    y: site.y,
+    x: site.x + (port.y - site.y) / slope,
+    y: port.y,
   };
   return [site, bend, port];
 }
@@ -277,7 +278,19 @@ function routeLeader(site: Point, port: Point, slope: number): Point[] {
 
 如果计算出的 `bend.x` 不在地图和矩阵之间，说明该 slope 或 band 不可行。此时应切换到另一条斜线带，或调整端口位置；不能直接让路径反向。
 
-### 7.2 两个斜线带
+### 7.2 斜线角度的原始约束
+
+论文没有指定一个固定数值角度，例如没有要求所有斜线必须是 `45°`。它规定的是以下几何约束：
+
+1. **固定斜率。** 在同一个斜线带内，所有 diagonal segment 使用同一个固定梯度 `k`，因此相互平行；若以水平轴为参考，倾斜角为 `θ = atan(|k|)`。
+2. **两种方向。** leader 可属于向上或向下的斜线带，两个带使用符号相反的斜率；也就是说可写成 `k_up = -tan(θ)`、`k_down = tan(θ)`，具体正负取决于屏幕 `y` 轴向下的坐标约定。
+3. **角度不能按线单独调整。** 第二阶段优化只移动地图中的 `site`，不改变该 leader 所在带的 `k`。若每条线拥有不同角度，论文用于表达线间距的距离关系将不再是线性的，也无法保持平行、等距和稳定顺序。
+4. **水平段严格水平。** `bend.y === port.y`；斜段从地图 site 到 bend，水平段从 bend 连到矩阵 port。
+5. **前进性。** 对“地图在左、矩阵在右”的构图，必须有 `bend.x > site.x` 且 `port.x > bend.x`。这等价于要求 `(port.y - site.y) / k > 0`，不满足时该 leader 必须换到另一方向带或重新布局。
+
+论文中的 uniform gradient 是其无交叉与二次优化可行的前提，而非纯粹的视觉偏好。
+
+### 7.3 两个斜线带
 
 论文的边界标注布局会生成斜向上和斜向下的 leader 带。工程实现中可以显式维护：
 
@@ -292,7 +305,7 @@ type Band = "up" | "down";
 
 两带的作用是为复杂地理分布提供不同的绕行方向。简单地图常常只需要一个 band；如果一带导致 bend 出现回折、相邻距离过小或无法通过区域内部连接点，则才把该 leader 放入另一带。
 
-### 7.3 Origin 与 destination 的隔离
+### 7.4 Origin 与 destination 的隔离
 
 origin leaders 与 destination leaders 是两个独立问题：
 
@@ -596,4 +609,3 @@ function layoutStaticMapTrix(input: MapTrixInput): StaticMapTrixLayout {
 8. 若需要严格贴近论文，再替换为二次规划优化器。
 
 达到第 5 步即可形成正确的 MapTrix 引导线骨架；第 6–8 步决定大规模、密集区域时的可读性。
-

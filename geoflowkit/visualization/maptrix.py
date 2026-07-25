@@ -14,7 +14,9 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
-from shapely.geometry import Point
+from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.sparse import lil_matrix
+from shapely.geometry import LineString, Point
 
 from geoflowkit.visualization._utils import (
     _ax_to_fig,
@@ -57,8 +59,22 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         Colours for row and column leaders.
     line_alpha : float, default=0.72
         Leader opacity.
+    leader_routing : {'diagonal-horizontal', 'horizontal-diagonal'}
+        Segment order from map site to matrix port.  The default follows
+        the original MapTrix design: diagonal map-to-bend segment,
+        followed by a horizontal bend-to-matrix segment.  The alternative
+        retains the previous GeoFlowKit layout.
+    leader_angle : float, default=45
+        Absolute diagonal angle in degrees.  This is an implementation
+        default, not a value prescribed by the MapTrix paper.  All
+        diagonals in an up/down band use the corresponding fixed slopes
+        ``-tan(theta)`` and ``tan(theta)`` in screen coordinates.
+    leader_width_range : tuple of (float, float), default=(0.8, 4.5)
+        Minimum and maximum leader widths.  Origin leaders encode total
+        outflow; destination leaders encode total inflow.  Pass ``None``
+        to use the fixed ``leader_linewidth`` instead.
     leader_linewidth : float, default=1.25
-        Fixed leader width.  It deliberately does not depend on flow.
+        Fallback fixed width when ``leader_width_range=None``.
     origin_map_rect, destination_map_rect, matrix_rect, colorbar_rect :
         tuple of four floats, optional
         ``(left, bottom, width, height)`` in figure coordinates.  Defaults
@@ -66,10 +82,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     corridor_gap : float, default=0.018
         Horizontal gap, in figure coordinates, between a map and the
         bend rail for its leaders.
-    min_leader_gap : float, default=6
-        Desired minimum vertical separation between adjacent leaders, in
-        display pixels.  Sites are moved only to sampled points that stay
-        inside their zone.
+    min_leader_gap : float, default=12
+        Minimum desired vertical separation between adjacent map sites,
+        in display pixels.  A site and its proportional symbol are moved
+        together and remain inside the corresponding zone.
     cbar_kwds : dict, optional
         Extra keyword arguments for the matrix colorbar.
 
@@ -109,6 +125,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         origin_line_color="#2878B5",
         destination_line_color="#D97706",
         line_alpha: float = 0.72,
+        leader_routing: str = "diagonal-horizontal",
+        leader_angle: float = 45.0,
+        leader_width_range: tuple[float, float] | None = (0.8, 4.5),
         leader_linewidth: float = 1.25,
         show_labels: bool = True,
         label_fontsize: int = 9,
@@ -122,7 +141,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         matrix_rect: tuple[float, float, float, float] | None = None,
         colorbar_rect: tuple[float, float, float, float] | None = None,
         corridor_gap: float = 0.018,
-        min_leader_gap: float = 6.0,
+        min_leader_gap: float = 12.0,
         site_grid_size: int = 7,
         map_facecolor="#F2F4F5",
         map_edgecolor="#8B949E",
@@ -168,6 +187,30 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.origin_line_color = origin_line_color
         self.destination_line_color = destination_line_color
         self.line_alpha = line_alpha
+        valid_routing = {"diagonal-horizontal", "horizontal-diagonal"}
+        if leader_routing not in valid_routing:
+            raise ValueError(
+                f"leader_routing must be one of {sorted(valid_routing)}"
+            )
+        self.leader_routing = leader_routing
+        self.leader_angle = float(leader_angle)
+        if not 0.0 < self.leader_angle < 90.0:
+            raise ValueError("leader_angle must be between 0 and 90 degrees")
+        self.leader_slope = float(
+            np.tan(np.radians(self.leader_angle))
+        )
+        if leader_width_range is not None:
+            if len(leader_width_range) != 2:
+                raise ValueError("leader_width_range must contain two values")
+            leader_width_range = tuple(float(v) for v in leader_width_range)
+            if (
+                leader_width_range[0] <= 0
+                or leader_width_range[1] < leader_width_range[0]
+            ):
+                raise ValueError(
+                    "leader_width_range must be positive and increasing"
+                )
+        self.leader_width_range = leader_width_range
         self.leader_linewidth = leader_linewidth
         self.out_title = out_title
         self.in_title = in_title
@@ -223,6 +266,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.axes_ = None
         self.layout_ = None
         self._leader_geometry = None
+        self._fixed_layout_solution = None
+        self.o_sites_ = None
+        self.d_sites_ = None
 
     @staticmethod
     def _validate_rect(rect, name):
@@ -308,14 +354,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
 
     @staticmethod
     def _order_for_side(ids, points, side):
-        """Order sites along the exposed right boundary of a map.
+        """Create a stable geography-only seed for boundary ordering.
 
-        The first segment of every leader is horizontal and ends on a
-        vertical bend rail.  Projecting sites onto that rail (screen y)
-        preserves their order exactly; ports on both selected matrix
-        sides are also monotone from top to bottom.  This is the
-        one-sided boundary-labelling approximation used by this static
-        renderer.
+        The fixed-angle boundary solver may refine this seed after the
+        active figure transforms and matrix ports are known.
         """
         available = [(zid, points[zid]) for zid in ids if zid in points]
         if not available:
@@ -329,7 +371,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         scored = []
         for original_index, (zid, (x, y)) in enumerate(available):
             y_screen = 1.0 - (y - y0) / y_span
-            x_tie_breaker = float(x) if side == "column" else -float(x)
+            x_tie_breaker = (
+                float(x) if side == "column" else -float(x)
+            )
             scored.append((y_screen, x_tie_breaker, original_index, zid))
 
         result = [zid for _, _, _, zid in sorted(scored)]
@@ -389,23 +433,15 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             "colorbar": ax_colorbar,
         }
 
-        self._draw_map(
+        self._draw_map_base(
             ax_origin,
-            self.row_order_,
-            self._outflows,
             self.origin_zones,
-            self.o_centroids_,
             self.out_title,
-            self.origin_line_color,
         )
-        self._draw_map(
+        self._draw_map_base(
             ax_destination,
-            self.column_order_,
-            self._inflows,
             self.dest_zones,
-            self.d_centroids_,
             self.in_title,
-            self.destination_line_color,
         )
         self._im, self._transform = self._draw_matrix(ax_matrix)
         self._draw_colorbar(fig, ax_colorbar)
@@ -413,24 +449,50 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         # The active matrix axes rectangle is only known after equal-aspect
         # adjustment, so leader geometry is resolved after a canvas draw.
         fig.canvas.draw()
+        if self.leader_routing == "diagonal-horizontal":
+            row_order, column_order = self._solve_boundary_orders(
+                fig, ax_origin, ax_destination, ax_matrix,
+            )
+            if (
+                row_order != self.row_order_
+                or column_order != self.column_order_
+            ):
+                self.row_order_ = row_order
+                self.column_order_ = column_order
+                self.o_order_ = self.row_order_
+                self.d_order_ = self.column_order_
+                self.o_ids_ = np.asarray(self.row_order_)
+                self.d_ids_ = np.asarray(self.column_order_)
+                self._apply_ordering()
+                ax_matrix.clear()
+                ax_colorbar.clear()
+                self._im, self._transform = self._draw_matrix(ax_matrix)
+                self._draw_colorbar(fig, ax_colorbar)
+                fig.canvas.draw()
         self._leader_geometry = self._draw_leaders(
             fig, ax_origin, ax_destination, ax_matrix,
+        )
+        self._draw_map_symbols(
+            ax_origin,
+            self.row_order_,
+            self._outflows,
+            self.o_sites_,
+            self.origin_line_color,
+        )
+        self._draw_map_symbols(
+            ax_destination,
+            self.column_order_,
+            self._inflows,
+            self.d_sites_,
+            self.destination_line_color,
         )
         self._draw_matrix_ports(ax_matrix)
         fig.canvas.draw()
         self.layout_ = self._export_layout(fig, ax_origin, ax_destination, ax_matrix)
         return fig
 
-    def _draw_map(
-        self,
-        ax,
-        zone_order,
-        flow_totals,
-        zones,
-        points,
-        title,
-        accent,
-    ):
+    def _draw_map_base(self, ax, zones, title):
+        """Draw zone polygons and establish a stable map transform."""
         zones.plot(
             ax=ax,
             facecolor=self.map_facecolor,
@@ -445,6 +507,21 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             ax.set_xlim(minx - pad_x, maxx + pad_x)
             ax.set_ylim(miny - pad_y, maxy + pad_y)
 
+        ax.set_title(
+            title,
+            loc="left",
+            fontsize=self.title_fontsize,
+            fontweight="semibold",
+            color="#24292F",
+            pad=8,
+        )
+        ax.set_aspect("equal", adjustable="box")
+        ax.axis("off")
+
+    def _draw_map_symbols(
+        self, ax, zone_order, flow_totals, points, accent,
+    ):
+        """Draw flow symbols and labels at the final leader sites."""
         active_points = {z: points[z] for z in zone_order if z in points}
         values = np.asarray(
             [flow_totals.get(z, 0.0) for z in active_points], dtype=float,
@@ -470,17 +547,6 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 {z: str(z) for z in active_points},
                 fontsize=self.label_fontsize,
             )
-
-        ax.set_title(
-            title,
-            loc="left",
-            fontsize=self.title_fontsize,
-            fontweight="semibold",
-            color="#24292F",
-            pad=8,
-        )
-        ax.set_aspect("equal", adjustable="box")
-        ax.axis("off")
 
     def _draw_matrix(self, ax):
         cmap = plt.get_cmap(self.matrix_cmap)
@@ -551,6 +617,505 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             color="#57606A",
         )
 
+    def _solve_boundary_orders(
+        self, fig, ax_origin, ax_destination, ax_matrix,
+    ):
+        """Jointly assign ports and in-zone sites for fixed-angle leaders."""
+        rows, cols = self.matrix_.shape
+        origin_ports = self._matrix_port_points(
+            fig, ax_matrix, "left", rows,
+        )
+        destination_ports = self._matrix_port_points(
+            fig, ax_matrix, "bottom", cols,
+        )
+        origin_group = self._build_route_options(
+            fig,
+            ax_origin,
+            list(self.row_order_),
+            self.o_centroids_,
+            self.origin_zones,
+            self.zone_id_col,
+            origin_ports,
+            "origin",
+        )
+        destination_group = self._build_route_options(
+            fig,
+            ax_destination,
+            list(self.column_order_),
+            self.d_centroids_,
+            self.dest_zones,
+            self.dest_zone_id_col,
+            destination_ports,
+            "destination",
+        )
+        if self._same_entity_set:
+            ids = list(self.row_order_)
+            candidate_orders = self._solve_compatible_orders(
+                ids, [origin_group, destination_group],
+            )
+            for shared_order in candidate_orders:
+                try:
+                    origin_assignment = self._solve_port_site_assignment(
+                        ids,
+                        [origin_group],
+                        fixed_order=shared_order,
+                    )
+                    destination_assignment = (
+                        self._solve_port_site_assignment(
+                            ids,
+                            [destination_group],
+                            fixed_order=shared_order,
+                        )
+                    )
+                    break
+                except RuntimeError:
+                    continue
+            else:
+                raise RuntimeError(
+                    "No globally crossing-free shared order was found "
+                    "for both map corridors."
+                )
+            self._fixed_layout_solution = {
+                "origin": self._routes_from_assignment(
+                    origin_assignment,
+                )["origin"],
+                "destination": self._routes_from_assignment(
+                    destination_assignment,
+                )["destination"],
+            }
+            return shared_order, list(shared_order)
+
+        origin_assignment = self._solve_port_site_assignment(
+            list(self.row_order_),
+            [origin_group],
+        )
+        destination_assignment = self._solve_port_site_assignment(
+            list(self.column_order_),
+            [destination_group],
+        )
+        row_order = self._order_from_assignment(
+            list(self.row_order_), origin_assignment,
+        )
+        column_order = self._order_from_assignment(
+            list(self.column_order_), destination_assignment,
+        )
+        self._fixed_layout_solution = {
+            "origin": self._routes_from_assignment(
+                origin_assignment,
+            )["origin"],
+            "destination": self._routes_from_assignment(
+                destination_assignment,
+            )["destination"],
+        }
+        return row_order, column_order
+
+    def _fixed_display_route(self, site_display, port_display):
+        """Construct one fixed-slope do-leader in display coordinates."""
+        site_display = np.asarray(site_display, dtype=float)
+        port_display = np.asarray(port_display, dtype=float)
+        delta_y = port_display[1] - site_display[1]
+        if abs(delta_y) < 1e-6:
+            return None
+        gradient = np.copysign(self.leader_slope, delta_y)
+        bend_x = site_display[0] + delta_y / gradient
+        if (
+            bend_x <= site_display[0] + 1.0
+            or bend_x >= port_display[0] - 1.0
+        ):
+            return None
+        bend = np.asarray((bend_x, port_display[1]), dtype=float)
+        path = [site_display, bend, port_display]
+        return {
+            "path": path,
+            "length": float(
+                np.linalg.norm(site_display - bend)
+                + np.linalg.norm(bend - port_display)
+            ),
+            "band": "up" if delta_y > 0 else "down",
+            "slope": float(-gradient),
+        }
+
+    def _build_route_options(
+        self,
+        fig,
+        ax,
+        ids,
+        initial_sites,
+        zones,
+        zone_id_col,
+        ports,
+        kind,
+    ):
+        """Create fixed-slope candidates for every zone/port pairing."""
+        prepared = _prepare_zones(zones, zone_id_col=zone_id_col)
+        geometries = dict(zip(prepared["zone_id"], prepared.geometry))
+        options = {}
+
+        for zone_id in ids:
+            geometry = geometries[zone_id]
+            initial = np.asarray(initial_sites[zone_id], dtype=float)
+            initial_display = ax.transData.transform(initial)
+            minx, miny, maxx, maxy = geometry.bounds
+            x_values = np.linspace(
+                minx, maxx, self.site_grid_size + 2,
+            )[1:-1]
+            y_values = np.linspace(
+                miny, maxy, self.site_grid_size + 2,
+            )[1:-1]
+            site_candidates = [tuple(initial)]
+            site_candidates.extend(
+                (float(x), float(y))
+                for y in y_values
+                for x in x_values
+                if geometry.covers(Point(float(x), float(y)))
+            )
+
+            by_slot = {}
+            for slot, port_figure in enumerate(ports):
+                port_display = fig.transFigure.transform(port_figure)
+                candidates = []
+                seen = set()
+                for site_data in site_candidates:
+                    site_display = ax.transData.transform(site_data)
+                    route = self._fixed_display_route(
+                        site_display, port_display,
+                    )
+                    if route is None:
+                        continue
+                    key = tuple(
+                        np.round(np.concatenate(route["path"]), 5)
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    figure_path = [
+                        fig.transFigure.inverted().transform(point)
+                        for point in route["path"]
+                    ]
+                    displacement = float(
+                        np.linalg.norm(site_display - initial_display)
+                    )
+                    candidates.append(
+                        {
+                            "kind": kind,
+                            "zone_id": zone_id,
+                            "slot": slot,
+                            "site": tuple(site_data),
+                            "path": figure_path,
+                            "line": LineString(route["path"]),
+                            "band": route["band"],
+                            "slope": route["slope"],
+                            "score": displacement
+                            + 0.03 * route["length"],
+                        }
+                    )
+                candidates.sort(key=lambda item: item["score"])
+                if candidates:
+                    by_slot[slot] = candidates[:12]
+            options[zone_id] = by_slot
+
+        return {"kind": kind, "ports": ports, "options": options}
+
+    @staticmethod
+    def _solve_compatible_orders(ids, groups, max_orders=30):
+        """Find shared orders with pairwise-compatible site choices."""
+        assignments = []
+        costs = []
+        for zone_id in ids:
+            for slot in range(len(ids)):
+                if not all(
+                    slot in group["options"][zone_id] for group in groups
+                ):
+                    continue
+                assignments.append((zone_id, slot))
+                costs.append(
+                    sum(
+                        group["options"][zone_id][slot][0]["score"]
+                        for group in groups
+                    )
+                )
+
+        variable_count = len(assignments)
+        count = len(ids)
+        zone_indices = {zone_id: index for index, zone_id in enumerate(ids)}
+        variable_lookup = {
+            assignment: index
+            for index, assignment in enumerate(assignments)
+        }
+        incompatible = []
+        for first_zone_index, first_zone in enumerate(ids):
+            for second_zone in ids[first_zone_index + 1:]:
+                for first_slot in range(count):
+                    first_index = variable_lookup.get(
+                        (first_zone, first_slot)
+                    )
+                    if first_index is None:
+                        continue
+                    for second_slot in range(count):
+                        if first_slot == second_slot:
+                            continue
+                        second_index = variable_lookup.get(
+                            (second_zone, second_slot)
+                        )
+                        if second_index is None:
+                            continue
+                        compatible = True
+                        for group in groups:
+                            first_routes = group["options"][first_zone][
+                                first_slot
+                            ]
+                            second_routes = group["options"][second_zone][
+                                second_slot
+                            ]
+                            if not any(
+                                not first["line"].intersects(
+                                    second["line"]
+                                )
+                                for first in first_routes
+                                for second in second_routes
+                            ):
+                                compatible = False
+                                break
+                        if not compatible:
+                            incompatible.append(
+                                (first_index, second_index)
+                            )
+
+        matrix = lil_matrix(
+            (count * 2 + len(incompatible), variable_count),
+            dtype=float,
+        )
+        for variable_index, (zone_id, slot) in enumerate(assignments):
+            matrix[zone_indices[zone_id], variable_index] = 1.0
+            matrix[count + slot, variable_index] = 1.0
+        for row, (first, second) in enumerate(
+            incompatible, start=count * 2,
+        ):
+            matrix[row, first] = 1.0
+            matrix[row, second] = 1.0
+
+        lower = np.concatenate(
+            [np.ones(count * 2), np.full(len(incompatible), -np.inf)]
+        )
+        upper = np.ones(count * 2 + len(incompatible))
+        costs = np.asarray(costs, dtype=float)
+        costs /= max(float(costs.max()), 1.0)
+        orders = []
+        selected_sets = []
+        for _ in range(max_orders):
+            row_count = matrix.shape[0] + len(selected_sets)
+            active_matrix = lil_matrix(
+                (row_count, variable_count), dtype=float,
+            )
+            active_matrix[: matrix.shape[0]] = matrix
+            active_lower = np.concatenate(
+                [lower, np.full(len(selected_sets), -np.inf)]
+            )
+            active_upper = np.concatenate(
+                [upper, np.full(len(selected_sets), count - 1.0)]
+            )
+            for offset, selected in enumerate(selected_sets):
+                row = matrix.shape[0] + offset
+                for variable_index in selected:
+                    active_matrix[row, variable_index] = 1.0
+            result = milp(
+                c=costs,
+                integrality=np.ones(variable_count),
+                bounds=Bounds(
+                    np.zeros(variable_count), np.ones(variable_count),
+                ),
+                constraints=LinearConstraint(
+                    active_matrix.tocsr(), active_lower, active_upper,
+                ),
+                options={"time_limit": 20.0},
+            )
+            if not result.success or result.x is None:
+                break
+            selected = np.flatnonzero(result.x > 0.5).tolist()
+            selected_sets.append(selected)
+            order = [None] * count
+            for variable_index in selected:
+                zone_id, slot = assignments[variable_index]
+                order[slot] = zone_id
+            orders.append(order)
+        if not orders:
+            raise RuntimeError(
+                "No shared fixed-slope port order is feasible for both "
+                "map corridors."
+            )
+        return orders
+
+    def _solve_port_site_assignment(
+        self, ids, groups, fixed_order=None,
+    ):
+        """Solve shared port assignment and crossing-free site selection."""
+        domains = {}
+        for zone_id in ids:
+            entries = []
+            common_slots = set(range(len(ids)))
+            for group in groups:
+                common_slots &= set(group["options"][zone_id])
+            for slot in sorted(common_slots):
+                if (
+                    fixed_order is not None
+                    and fixed_order[slot] != zone_id
+                ):
+                    continue
+                route_lists = [
+                    group["options"][zone_id][slot] for group in groups
+                ]
+                combinations = [()]
+                for route_list in route_lists:
+                    combinations = [
+                        combination + (route,)
+                        for combination in combinations
+                        for route in route_list
+                    ]
+                for routes in combinations:
+                    entries.append(
+                        {
+                            "slot": slot,
+                            "routes": routes,
+                            "score": sum(
+                                route["score"] for route in routes
+                            ),
+                        }
+                    )
+            entries.sort(key=lambda item: item["score"])
+            domains[zone_id] = entries
+            if not entries:
+                raise RuntimeError(
+                    f"No feasible fixed-slope route for zone {zone_id!r} "
+                    f"at leader_angle={self.leader_angle:g}°. Adjust the "
+                    "angle, map/matrix rectangles, or site sampling."
+                )
+
+        variables = []
+        for zone_id in ids:
+            variables.extend(domains[zone_id])
+        variable_count = len(variables)
+        count = len(ids)
+        zone_indices = {zone_id: index for index, zone_id in enumerate(ids)}
+
+        base = lil_matrix((count * 2, variable_count), dtype=float)
+        for variable_index, entry in enumerate(variables):
+            zone_id = entry["routes"][0]["zone_id"]
+            base[zone_indices[zone_id], variable_index] = 1.0
+            base[count + entry["slot"], variable_index] = 1.0
+
+        conflict_pairs = set()
+        costs = np.asarray(
+            [entry["score"] for entry in variables], dtype=float,
+        )
+        scale = max(float(costs.max()), 1.0)
+        costs = costs / scale
+
+        for _ in range(500):
+            constraint_count = count * 2 + len(conflict_pairs)
+            matrix = lil_matrix(
+                (constraint_count, variable_count), dtype=float,
+            )
+            matrix[: count * 2] = base
+            lower = np.concatenate(
+                [np.ones(count * 2), np.full(len(conflict_pairs), -np.inf)]
+            )
+            upper = np.ones(constraint_count)
+            for row, (first, second) in enumerate(
+                sorted(conflict_pairs), start=count * 2,
+            ):
+                matrix[row, first] = 1.0
+                matrix[row, second] = 1.0
+
+            result = milp(
+                c=costs,
+                integrality=np.ones(variable_count),
+                bounds=Bounds(
+                    np.zeros(variable_count), np.ones(variable_count),
+                ),
+                constraints=LinearConstraint(
+                    matrix.tocsr(), lower, upper,
+                ),
+                options={"time_limit": 20.0},
+            )
+            if not result.success or result.x is None:
+                break
+
+            chosen_indices = np.flatnonzero(result.x > 0.5).tolist()
+            new_conflicts = set()
+            for position, first_index in enumerate(chosen_indices):
+                first = variables[first_index]
+                for second_index in chosen_indices[position + 1:]:
+                    second = variables[second_index]
+                    if any(
+                        first_route["line"].intersects(
+                            second_route["line"]
+                        )
+                        for first_route, second_route in zip(
+                            first["routes"], second["routes"]
+                        )
+                    ):
+                        new_conflicts.add(
+                            tuple(sorted((first_index, second_index)))
+                        )
+            if not new_conflicts:
+                return {
+                    entry["routes"][0]["zone_id"]: entry
+                    for entry in (
+                        variables[index] for index in chosen_indices
+                    )
+                }
+            # A selected route that crosses another candidate can never
+            # coexist with it.  Adding the whole conflict neighbourhood,
+            # rather than only the currently selected pairs, makes the
+            # lazy-constraint loop converge in a few MILP solves.
+            for first_index in chosen_indices:
+                first = variables[first_index]
+                first_zone = first["routes"][0]["zone_id"]
+                for second_index, second in enumerate(variables):
+                    if first_index == second_index:
+                        continue
+                    if (
+                        first_zone == second["routes"][0]["zone_id"]
+                        or first["slot"] == second["slot"]
+                    ):
+                        continue
+                    pair = tuple(sorted((first_index, second_index)))
+                    if pair in conflict_pairs or pair in new_conflicts:
+                        continue
+                    if any(
+                        first_route["line"].intersects(
+                            second_route["line"]
+                        )
+                        for first_route, second_route in zip(
+                            first["routes"], second["routes"]
+                        )
+                    ):
+                        new_conflicts.add(pair)
+            previous_count = len(conflict_pairs)
+            conflict_pairs.update(new_conflicts)
+            if len(conflict_pairs) == previous_count:
+                break
+
+        raise RuntimeError(
+            "No crossing-free fixed-slope MapTrix layout was found. "
+            "Adjust leader_angle, layout rectangles, or site_grid_size."
+        )
+
+    @staticmethod
+    def _order_from_assignment(ids, assignment):
+        order = [None] * len(ids)
+        for zone_id, entry in assignment.items():
+            order[entry["slot"]] = zone_id
+        return order
+
+    @staticmethod
+    def _routes_from_assignment(assignment):
+        routes = {"origin": {}, "destination": {}}
+        for zone_id, entry in assignment.items():
+            for route in entry["routes"]:
+                routes[route["kind"]][zone_id] = route
+        return routes
+
     def _draw_leaders(self, fig, ax_origin, ax_destination, ax_matrix):
         rows, cols = self.matrix_.shape
         geometry = {"origin": [], "destination": []}
@@ -562,6 +1127,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 self.o_centroids_,
                 self.origin_zones,
                 self.zone_id_col,
+                self._outflows,
                 "left",
                 rows,
                 self.origin_line_color,
@@ -574,6 +1140,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 self.d_centroids_,
                 self.dest_zones,
                 self.dest_zone_id_col,
+                self._inflows,
                 "bottom",
                 cols,
                 self.destination_line_color,
@@ -585,9 +1152,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             kind,
             map_ax,
             order,
-            sites,
+            initial_sites,
             zones,
             zone_id_col,
+            flow_totals,
             matrix_side,
             expected_count,
             color,
@@ -596,47 +1164,70 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             if len(order) != expected_count:
                 raise RuntimeError("Matrix dimensions and leader order are inconsistent")
 
-            optimized_sites = self._optimize_map_sites(
-                fig, map_ax, order, sites, zones, zone_id_col,
-            )
-            map_ax.scatter(
-                [point[0] for point in optimized_sites.values()],
-                [point[1] for point in optimized_sites.values()],
-                s=10,
-                c=color,
-                edgecolors="white",
-                linewidths=0.35,
-                zorder=5,
-            )
+            width_map = self._leader_width_map(order, flow_totals)
 
             map_box = map_ax.get_position()
-            port_points = []
-            for index in range(len(order)):
-                x, y = _calculate_matrix_anchor_point(
-                    self._transform, rows, cols, matrix_side, index,
-                )
-                port_points.append(_ax_to_fig(ax_matrix, fig, x, y))
-
-            min_port_x = min(point[0] for point in port_points)
-            bend_x = min(
-                map_box.x1 + self.corridor_gap + extra_gap,
-                min_port_x - max(self.corridor_gap * 0.35, 0.006),
+            port_points = self._matrix_port_points(
+                fig, ax_matrix, matrix_side, len(order),
             )
-            bend_x = max(bend_x, map_box.x1 + 0.004)
 
-            for index, (zone_id, port) in enumerate(zip(order, port_points)):
-                if zone_id not in optimized_sites:
-                    continue
-                site = _ax_to_fig(map_ax, fig, *optimized_sites[zone_id])
-                bend = np.asarray((bend_x, site[1]), dtype=float)
-                path = [np.asarray(site), bend, np.asarray(port)]
+            if self.leader_routing == "diagonal-horizontal":
+                resolved = self._fixed_layout_solution[kind]
+                sites = {
+                    zone_id: resolved[zone_id]["site"]
+                    for zone_id in order
+                }
+                paths = [
+                    resolved[zone_id]["path"] for zone_id in order
+                ]
+                bands = [
+                    resolved[zone_id]["band"] for zone_id in order
+                ]
+                slopes = [
+                    resolved[zone_id]["slope"] for zone_id in order
+                ]
+            else:
+                sites = self._optimize_map_sites(
+                    fig,
+                    map_ax,
+                    order,
+                    initial_sites,
+                    zones,
+                    zone_id_col,
+                )
+                min_port_x = min(point[0] for point in port_points)
+                bend_x = min(
+                    map_box.x1 + self.corridor_gap + extra_gap,
+                    min_port_x - max(self.corridor_gap * 0.35, 0.006),
+                )
+                bend_x = max(bend_x, map_box.x1 + 0.004)
+                paths = []
+                for zone_id, port in zip(order, port_points):
+                    site = np.asarray(
+                        _ax_to_fig(map_ax, fig, *sites[zone_id])
+                    )
+                    bend = np.asarray((bend_x, site[1]), dtype=float)
+                    paths.append([site, bend, np.asarray(port)])
+                bands = [None] * len(paths)
+                slopes = [None] * len(paths)
+
+            if kind == "origin":
+                self.o_sites_ = sites
+            else:
+                self.d_sites_ = sites
+
+            for index, (zone_id, path, band, slope) in enumerate(
+                zip(order, paths, bands, slopes)
+            ):
+                site, bend, port = path
+                linewidth = width_map[zone_id]
                 fig.add_artist(
                     Line2D(
                         [p[0] for p in path],
                         [p[1] for p in path],
                         transform=fig.transFigure,
                         color=color,
-                        linewidth=self.leader_linewidth,
+                        linewidth=linewidth,
                         alpha=self.line_alpha,
                         solid_capstyle="round",
                         solid_joinstyle="round",
@@ -657,6 +1248,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                         "port": tuple(port),
                         "path": [tuple(p) for p in path],
                         "order": index,
+                        "value": float(flow_totals.get(zone_id, 0.0)),
+                        "linewidth": float(linewidth),
+                        "band": band,
+                        "slope": slope,
                     }
                 )
         return geometry
@@ -664,7 +1259,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     def _optimize_map_sites(
         self, fig, ax, order, initial_sites, zones, zone_id_col,
     ):
-        """Spread adjacent sites using in-polygon discrete candidates."""
+        """Spread legacy-route sites using in-polygon candidates."""
         prepared = _prepare_zones(zones, zone_id_col=zone_id_col)
         geometries = dict(zip(prepared["zone_id"], prepared.geometry))
         result = {}
@@ -676,8 +1271,12 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             initial = np.asarray(initial_sites[zone_id], dtype=float)
             geometry = geometries[zone_id]
             minx, miny, maxx, maxy = geometry.bounds
-            x_values = np.linspace(minx, maxx, self.site_grid_size + 2)[1:-1]
-            y_values = np.linspace(miny, maxy, self.site_grid_size + 2)[1:-1]
+            x_values = np.linspace(
+                minx, maxx, self.site_grid_size + 2,
+            )[1:-1]
+            y_values = np.linspace(
+                miny, maxy, self.site_grid_size + 2,
+            )[1:-1]
             candidates = [tuple(initial)]
             candidates.extend(
                 (float(x), float(y))
@@ -692,20 +1291,57 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 display = ax.transData.transform(candidate)
                 if (
                     previous_display_y is not None
-                    and display[1] > previous_display_y - self.min_leader_gap
+                    and display[1]
+                    > previous_display_y - self.min_leader_gap
                 ):
                     continue
                 displacement = np.sum((display - initial_display) ** 2)
-                scored.append((float(displacement), candidate, display[1]))
+                scored.append(
+                    (float(displacement), candidate, display[1])
+                )
 
             if scored:
-                _, chosen, chosen_display_y = min(scored, key=lambda item: item[0])
+                _, chosen, chosen_display_y = min(
+                    scored, key=lambda item: item[0],
+                )
             else:
                 chosen = tuple(initial)
                 chosen_display_y = initial_display[1]
             result[zone_id] = chosen
             previous_display_y = chosen_display_y
         return result
+
+    def _matrix_port_points(self, fig, ax_matrix, side, count):
+        rows, cols = self.matrix_.shape
+        points = []
+        for index in range(count):
+            x, y = _calculate_matrix_anchor_point(
+                self._transform, rows, cols, side, index,
+            )
+            points.append(_ax_to_fig(ax_matrix, fig, x, y))
+        return points
+
+    def _leader_width_map(self, order, flow_totals):
+        """Map regional totals to leader widths for one leader group."""
+        if self.leader_width_range is None:
+            return {zone_id: float(self.leader_linewidth) for zone_id in order}
+        values = np.asarray(
+            [flow_totals.get(zone_id, 0.0) for zone_id in order],
+            dtype=float,
+        )
+        low, high = self.leader_width_range
+        if values.size == 0:
+            return {}
+        if np.all(values == 0):
+            widths = np.full(values.shape, low, dtype=float)
+        elif np.ptp(values) == 0:
+            widths = np.full(values.shape, (low + high) / 2.0, dtype=float)
+        else:
+            widths = _linear_scaling(values, (low, high))
+        return {
+            zone_id: float(width)
+            for zone_id, width in zip(order, widths)
+        }
 
     def _draw_matrix_ports(self, ax):
         if not self._leader_geometry:
@@ -764,7 +1400,13 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             for leader in source:
                 target.append(
                     {
-                        **{k: leader[k] for k in ("id", "kind", "order")},
+                        **{
+                            k: leader[k]
+                            for k in (
+                                "id", "kind", "order", "value", "linewidth",
+                                "band", "slope",
+                            )
+                        },
                         "site": self._fig_point_to_screen(fig, leader["site"]),
                         "bend": self._fig_point_to_screen(fig, leader["bend"]),
                         "port": self._fig_point_to_screen(fig, leader["port"]),
@@ -814,6 +1456,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 },
             },
             "same_entity_set": self._same_entity_set,
+            "leader_routing": self.leader_routing,
+            "leader_angle": self.leader_angle,
         }
 
     @staticmethod
