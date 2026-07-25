@@ -5,6 +5,7 @@ matplotlib.use("Agg")
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 from shapely.geometry import LineString, box
 
 from geoflowkit import FlowDataFrame, flows_from_od
@@ -98,6 +99,7 @@ def test_same_entity_set_uses_shared_order_and_non_crossing_leaders():
     assert layout["leader_angle"] == 45.0
     assert layout["minimum_diagonal_gap"]["origin"] >= 11.9
     assert layout["minimum_diagonal_gap"]["destination"] >= 11.9
+    assert visualizer.axes_["matrix"].patch.get_alpha() == 0.0
 
     for group in (
         layout["origin_leaders"], layout["destination_leaders"],
@@ -190,6 +192,88 @@ def test_unreachable_spacing_target_never_relaxes_non_crossing():
     _assert_group_has_no_crossings(layout["origin_leaders"])
     _assert_group_has_no_crossings(layout["destination_leaders"])
     plt.close(fig)
+
+
+def test_layout_rectangles_control_map_matrix_and_colorbar_geometry():
+    zones, flows = _same_set_fixture()
+    rects = {
+        "origin_map": (0.03, 0.56, 0.32, 0.36),
+        "destination_map": (0.03, 0.08, 0.32, 0.36),
+        "matrix": (0.345, 0.06, 0.53, 0.88),
+        "colorbar": (0.92, 0.12, 0.014, 0.76),
+    }
+    visualizer = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        leader_routing="horizontal-diagonal",
+        origin_map_rect=rects["origin_map"],
+        destination_map_rect=rects["destination_map"],
+        matrix_rect=rects["matrix"],
+        colorbar_rect=rects["colorbar"],
+        out_title="Origin map",
+        in_title="Destination map",
+        map_title_pad=24,
+        show_labels=False,
+    )
+    fig = visualizer.fit_plot(flows, figsize=(12, 8))
+    layout = visualizer.layout_
+
+    assert layout["configured_rects"] == rects
+    assert np.isclose(
+        layout["axes_rects"]["colorbar"]["h"], 0.76 * fig.bbox.height,
+    )
+    assert np.isclose(
+        layout["layout_gaps"]["configured_map_to_matrix"], -0.005,
+    )
+    assert layout["layout_gaps"]["matrix_to_colorbar"] > 0
+    assert visualizer.axes_["origin"].get_ylabel() == "Origin map"
+    assert visualizer.axes_["destination"].get_ylabel() == "Destination map"
+    assert visualizer.axes_["origin"].yaxis.labelpad == 24
+    assert visualizer.axes_["matrix"].get_title() == ""
+    assert visualizer.axes_["matrix"].patch.get_alpha() == 0.0
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value", "message"),
+    [
+        ("max_centroid_size", 2000.01, "must not exceed 2000"),
+        ("max_matrix_symbol_size", 1600.01, "must not exceed 1600"),
+        (
+            "leader_width_range",
+            (0.8, 12.01),
+            "maximum must not exceed 12 points",
+        ),
+        ("leader_linewidth", 12.01, "must not exceed 12"),
+    ],
+)
+def test_visual_size_limits_reject_unreasonable_values(
+    keyword, value, message,
+):
+    zones, _ = _same_set_fixture()
+    with pytest.raises(ValueError, match=message):
+        MapTrixVisualizer(
+            zones,
+            zone_id_col="id",
+            **{keyword: value},
+        )
+
+
+def test_visual_size_limits_accept_documented_boundaries():
+    zones, _ = _same_set_fixture()
+    visualizer = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        max_centroid_size=2000,
+        max_matrix_symbol_size=1600,
+        leader_width_range=(0.8, 12),
+        leader_linewidth=12,
+    )
+
+    assert visualizer.max_centroid_size == 2000
+    assert visualizer.max_matrix_symbol_size == 1600
+    assert visualizer.leader_width_range == (0.8, 12.0)
+    assert visualizer.leader_linewidth == 12
 
 
 def test_different_entity_sets_keep_independent_rectangular_axes():

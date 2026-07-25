@@ -4,14 +4,16 @@ This script demonstrates how to:
 1. Load flow data from CSV and border polygons from GeoPackage
 2. Sample flows and clip to the city boundary
 3. Create a centred MapTrix matrix with diagonal-horizontal leaders
-4. Encode regional totals with leader width
-5. Inspect the exported static layout geometry
+4. Adjust map size, map-to-matrix gap, and colorbar geometry
+5. Encode regional totals with bounded leader/marker sizes
+6. Inspect the exported static layout geometry
 
 Usage:
-    python maptrix_demo.py
+    python examples/maptrix_demo.py
 """
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import geopandas as gpd
@@ -19,7 +21,9 @@ import geopandas as gpd
 from geoflowkit import read_csv
 from geoflowkit.visualization import MapTrixVisualizer
 
-DATA_DIR = 'examples/data/sz_data'
+EXAMPLE_DIR = Path(__file__).resolve().parent
+DATA_DIR = EXAMPLE_DIR / 'data' / 'sz_data'
+OUTPUT_PATH = EXAMPLE_DIR / 'maptrix_demo.png'
 
 warnings.filterwarnings(
     'ignore', message='Geometry is in a geographic CRS',
@@ -30,13 +34,13 @@ warnings.filterwarnings(
 # ---------------------------------------------------------------------------
 print('Loading data ...')
 fdf = read_csv(
-    f'{DATA_DIR}/sz_taxi_flow.csv',
+    DATA_DIR / 'sz_taxi_flow.csv',
     use_cols=['ox', 'oy', 'dx', 'dy'],
     crs='EPSG:4326',
 )
 print(f'  {len(fdf):,} flows loaded')
 
-border = gpd.read_file(f'{DATA_DIR}/sz_border.gpkg')
+border = gpd.read_file(DATA_DIR / 'sz_border.gpkg')
 print(f'  {len(border)} districts: {border["Name"].tolist()}')
 
 # ---------------------------------------------------------------------------
@@ -68,18 +72,23 @@ visualizer = MapTrixVisualizer(
     line_alpha=0.72,
     leader_routing='diagonal-horizontal',
     leader_angle=45,
-    leader_width_range=(0.9, 4.8),
+    leader_width_range=(0.9, 5.0),
+    max_centroid_size=340,
+    origin_map_rect=(0.04, 0.56, 0.385, 0.36),
+    destination_map_rect=(0.04, 0.08, 0.385, 0.36),
+    matrix_rect=(0.346, 0.08, 0.525, 0.84),
+    colorbar_rect=(0.85, 0.13, 0.014, 0.74),
     show_labels=True,
     label_fontsize=8,
     out_title='Origins · district outflow',
     in_title='Destinations · district inflow',
-    matrix_title='Shenzhen taxi flows · origins × destinations',
     title_fontsize=12,
+    map_title_pad=10,
     include_self_flows=False,
 )
 fig = visualizer.fit_plot(fdf_sample, figsize=(16, 9))
 
-fig.savefig('maptrix_demo.png', dpi=160, facecolor='white')
+fig.savefig(OUTPUT_PATH, dpi=160, facecolor='white')
 layout = visualizer.layout_
 print(
     f'  Layout: {len(layout["origin_leaders"])} row leaders, '
@@ -92,4 +101,4 @@ print(
     '  Minimum diagonal gaps (px): '
     f'{layout["minimum_diagonal_gap"]}'
 )
-print('Saved: maptrix_demo.png')
+print(f'Saved: {OUTPUT_PATH}')

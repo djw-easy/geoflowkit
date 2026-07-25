@@ -49,9 +49,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         Colormap for map proportional symbols.  Defaults to
         ``matrix_cmap``.
     max_centroid_size : float, default=260
-        Maximum marker area on the maps, in points squared.
+        Maximum marker area on the maps, in points squared.  Must not
+        exceed 2000.
     max_matrix_symbol_size : float, default=220
-        Maximum area of the optional matrix size overlay.
+        Maximum area of the optional matrix size overlay, in points
+        squared.  Must not exceed 1600.
     line_color : color, optional
         Set one colour for both leader groups.  When omitted, origins and
         destinations use distinct colours.
@@ -72,13 +74,20 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     leader_width_range : tuple of (float, float), default=(0.8, 4.5)
         Minimum and maximum leader widths.  Origin leaders encode total
         outflow; destination leaders encode total inflow.  Pass ``None``
-        to use the fixed ``leader_linewidth`` instead.
+        to use the fixed ``leader_linewidth`` instead.  Widths are in
+        points and cannot exceed 12.
     leader_linewidth : float, default=1.25
-        Fallback fixed width when ``leader_width_range=None``.
+        Fallback fixed width when ``leader_width_range=None``.  Must be
+        positive and no greater than 12 points.
     origin_map_rect, destination_map_rect, matrix_rect, colorbar_rect :
         tuple of four floats, optional
-        ``(left, bottom, width, height)`` in figure coordinates.  Defaults
-        follow the proportions in ``maptrix-static-layout-spec.md``.
+        ``(left, bottom, width, height)`` in normalized figure
+        coordinates.  Map width/height directly control map size.  The
+        horizontal map-to-matrix gap is ``matrix_rect.left`` minus the
+        maps' right edge; it may be negative when the axes rectangles
+        intentionally overlap.  ``colorbar_rect`` controls both colorbar
+        distance and length.  Defaults follow the proportions in
+        ``maptrix-static-layout-spec.md``.
     corridor_gap : float, default=0.018
         Horizontal gap, in figure coordinates, between a map and the
         bend rail for its leaders.
@@ -88,6 +97,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         capped max-min objective: crossings remain forbidden even when
         this gap cannot be reached.  For legacy routing it controls the
         vertical separation between adjacent map sites.
+    map_title_pad : float, default=12
+        Distance, in points, between each map's left border and its
+        vertical ``out_title`` or ``in_title`` axis label.
     cbar_kwds : dict, optional
         Extra keyword arguments for the matrix colorbar.
 
@@ -106,7 +118,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     _DEFAULT_ORIGIN_RECT = (0.04, 0.56, 0.30, 0.36)
     _DEFAULT_DESTINATION_RECT = (0.04, 0.08, 0.30, 0.36)
     _DEFAULT_MATRIX_RECT = (0.39, 0.08, 0.52, 0.84)
-    _DEFAULT_COLORBAR_RECT = (0.94, 0.22, 0.015, 0.56)
+    _DEFAULT_COLORBAR_RECT = (0.92, 0.13, 0.014, 0.74)
+    _MAX_CENTROID_SIZE = 2000.0
+    _MAX_MATRIX_SYMBOL_SIZE = 1600.0
+    _MAX_LEADER_WIDTH = 12.0
 
     def __init__(
         self,
@@ -135,8 +150,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         label_fontsize: int = 9,
         out_title: str = "Origins · row index",
         in_title: str = "Destinations · column index",
-        matrix_title: str = "Origin–destination matrix",
         title_fontsize: int = 13,
+        map_title_pad: float = 12.0,
         include_self_flows: bool = True,
         origin_map_rect: tuple[float, float, float, float] | None = None,
         destination_map_rect: tuple[float, float, float, float] | None = None,
@@ -182,8 +197,16 @@ class MapTrixVisualizer(ODMatrixVisualizer):
 
         self.matrix_cmap = matrix_cmap
         self.map_cmap = map_cmap if map_cmap is not None else matrix_cmap
-        self.max_centroid_size = max_centroid_size
-        self.max_matrix_symbol_size = max_matrix_symbol_size
+        self.max_centroid_size = self._validate_bounded_positive(
+            max_centroid_size,
+            "max_centroid_size",
+            self._MAX_CENTROID_SIZE,
+        )
+        self.max_matrix_symbol_size = self._validate_bounded_positive(
+            max_matrix_symbol_size,
+            "max_matrix_symbol_size",
+            self._MAX_MATRIX_SYMBOL_SIZE,
+        )
         if line_color is not None:
             origin_line_color = destination_line_color = line_color
         self.origin_line_color = origin_line_color
@@ -206,18 +229,31 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 raise ValueError("leader_width_range must contain two values")
             leader_width_range = tuple(float(v) for v in leader_width_range)
             if (
-                leader_width_range[0] <= 0
+                not np.all(np.isfinite(leader_width_range))
+                or leader_width_range[0] <= 0
                 or leader_width_range[1] < leader_width_range[0]
             ):
                 raise ValueError(
-                    "leader_width_range must be positive and increasing"
+                    "leader_width_range must be finite, positive, and "
+                    "increasing"
+                )
+            if leader_width_range[1] > self._MAX_LEADER_WIDTH:
+                raise ValueError(
+                    "leader_width_range maximum must not exceed "
+                    f"{self._MAX_LEADER_WIDTH:g} points"
                 )
         self.leader_width_range = leader_width_range
-        self.leader_linewidth = leader_linewidth
+        self.leader_linewidth = self._validate_bounded_positive(
+            leader_linewidth,
+            "leader_linewidth",
+            self._MAX_LEADER_WIDTH,
+        )
         self.out_title = out_title
         self.in_title = in_title
-        self.matrix_title = matrix_title
         self.title_fontsize = title_fontsize
+        self.map_title_pad = float(map_title_pad)
+        if not np.isfinite(self.map_title_pad):
+            raise ValueError("map_title_pad must be finite")
         self.origin_map_rect = self._validate_rect(
             origin_map_rect or self._DEFAULT_ORIGIN_RECT, "origin_map_rect",
         )
@@ -231,12 +267,6 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.colorbar_rect = self._validate_rect(
             colorbar_rect or self._DEFAULT_COLORBAR_RECT, "colorbar_rect",
         )
-        map_right = max(
-            self.origin_map_rect[0] + self.origin_map_rect[2],
-            self.destination_map_rect[0] + self.destination_map_rect[2],
-        )
-        if map_right >= self.matrix_rect[0]:
-            raise ValueError("Map rectangles must remain to the left of matrix_rect")
         destination_top = (
             self.destination_map_rect[1] + self.destination_map_rect[3]
         )
@@ -246,7 +276,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 "vertical corridors"
             )
         self.corridor_gap = float(corridor_gap)
+        if self.corridor_gap < 0:
+            raise ValueError("corridor_gap must be non-negative")
         self.min_leader_gap = float(min_leader_gap)
+        if self.min_leader_gap < 0:
+            raise ValueError("min_leader_gap must be non-negative")
         self.site_grid_size = max(int(site_grid_size), 3)
         self.map_facecolor = map_facecolor
         self.map_edgecolor = map_edgecolor
@@ -277,11 +311,24 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         if len(rect) != 4:
             raise ValueError(f"{name} must be a (left, bottom, width, height) tuple")
         rect = tuple(float(v) for v in rect)
+        if not np.all(np.isfinite(rect)):
+            raise ValueError(f"{name} values must be finite")
         if rect[2] <= 0 or rect[3] <= 0:
             raise ValueError(f"{name} width and height must be positive")
         if min(rect) < 0 or rect[0] + rect[2] > 1 or rect[1] + rect[3] > 1:
             raise ValueError(f"{name} must fit inside normalized figure coordinates")
         return rect
+
+    @staticmethod
+    def _validate_bounded_positive(value, name, maximum):
+        value = float(value)
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be a positive finite value")
+        if value > maximum:
+            raise ValueError(
+                f"{name} must not exceed {maximum:g}"
+            )
+        return value
 
     @staticmethod
     def _validate_zones(zones, zone_id_col, name):
@@ -509,16 +556,20 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             ax.set_xlim(minx - pad_x, maxx + pad_x)
             ax.set_ylim(miny - pad_y, maxy + pad_y)
 
-        ax.set_title(
+        ax.set_ylabel(
             title,
-            loc="left",
             fontsize=self.title_fontsize,
             fontweight="semibold",
             color="#24292F",
-            pad=8,
+            labelpad=self.map_title_pad,
+            rotation=90,
+            va="center",
         )
         ax.set_aspect("equal", adjustable="box")
-        ax.axis("off")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
 
     def _draw_map_symbols(
         self, ax, zone_order, flow_totals, points, accent,
@@ -551,6 +602,13 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             )
 
     def _draw_matrix(self, ax):
+        # The rotated matrix only occupies a diamond inside its rectangular
+        # axes.  Keep the axes patch transparent so that, when users choose
+        # zero or negative map-to-matrix gaps, the empty corner triangles
+        # do not cover the maps.  NaN matrix cells remain explicitly white
+        # through the colormap below.
+        ax.set_facecolor("none")
+        ax.patch.set_alpha(0.0)
         cmap = plt.get_cmap(self.matrix_cmap)
         if hasattr(cmap, "copy"):
             cmap = cmap.copy()
@@ -596,13 +654,6 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                     zorder=6,
                 )
 
-        ax.set_title(
-            self.matrix_title,
-            fontsize=self.title_fontsize,
-            fontweight="semibold",
-            color="#24292F",
-            pad=12,
-        )
         for spine in ax.spines.values():
             spine.set_visible(False)
         return im, transform
@@ -657,6 +708,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             candidate_orders = self._solve_compatible_orders(
                 ids, [origin_group, destination_group],
             )
+            best_layout = None
+            best_gap = -np.inf
             for shared_order in candidate_orders:
                 try:
                     origin_assignment = self._solve_port_site_assignment(
@@ -671,14 +724,35 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                             fixed_order=shared_order,
                         )
                     )
-                    break
                 except RuntimeError:
                     continue
-            else:
+                achieved_gap = min(
+                    self._assignment_minimum_clearance(
+                        origin_assignment,
+                    ),
+                    self._assignment_minimum_clearance(
+                        destination_assignment,
+                    ),
+                )
+                if achieved_gap > best_gap:
+                    best_gap = achieved_gap
+                    best_layout = (
+                        list(shared_order),
+                        origin_assignment,
+                        destination_assignment,
+                    )
+                if achieved_gap >= self.min_leader_gap - 1e-6:
+                    break
+            if best_layout is None:
                 raise RuntimeError(
                     "No globally crossing-free shared order was found "
                     "for both map corridors."
                 )
+            (
+                shared_order,
+                origin_assignment,
+                destination_assignment,
+            ) = best_layout
             self._fixed_layout_solution = {
                 "origin": self._routes_from_assignment(
                     origin_assignment,
@@ -1250,6 +1324,16 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                     gaps.append(clearance)
         return min(gaps) if gaps else np.inf
 
+    def _assignment_minimum_clearance(self, assignment):
+        entries = list(assignment.values())
+        gaps = []
+        for index, first in enumerate(entries):
+            for second in entries[index + 1:]:
+                clearance = self._entry_diagonal_clearance(first, second)
+                if np.isfinite(clearance):
+                    gaps.append(clearance)
+        return min(gaps) if gaps else np.inf
+
     @staticmethod
     def _assignment_from_indices(chosen, variables):
         return {
@@ -1608,6 +1692,18 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         column_ports = {
             leader["id"]: leader["port"] for leader in destination_leaders
         }
+        origin_rect = self._axes_rect_to_screen(fig, ax_origin)
+        destination_rect = self._axes_rect_to_screen(
+            fig, ax_destination,
+        )
+        matrix_axes_rect = self._axes_rect_to_screen(fig, ax_matrix)
+        colorbar_axes_rect = self._axes_rect_to_screen(
+            fig, self.axes_["colorbar"],
+        )
+        map_right = max(
+            origin_rect["x"] + origin_rect["w"],
+            destination_rect["x"] + destination_rect["w"],
+        )
 
         local_corners = [(0, rows), (cols, rows), (cols, 0), (0, 0)]
         corners = []
@@ -1624,8 +1720,39 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             "origin_leaders": origin_leaders,
             "destination_leaders": destination_leaders,
             "map_rects": {
-                "origin": self._axes_rect_to_screen(fig, ax_origin),
-                "destination": self._axes_rect_to_screen(fig, ax_destination),
+                "origin": origin_rect,
+                "destination": destination_rect,
+            },
+            "axes_rects": {
+                "origin_map": origin_rect,
+                "destination_map": destination_rect,
+                "matrix": matrix_axes_rect,
+                "colorbar": colorbar_axes_rect,
+            },
+            "configured_rects": {
+                "origin_map": self.origin_map_rect,
+                "destination_map": self.destination_map_rect,
+                "matrix": self.matrix_rect,
+                "colorbar": self.colorbar_rect,
+            },
+            "layout_gaps": {
+                "configured_map_to_matrix": float(
+                    self.matrix_rect[0]
+                    - max(
+                        self.origin_map_rect[0]
+                        + self.origin_map_rect[2],
+                        self.destination_map_rect[0]
+                        + self.destination_map_rect[2],
+                    )
+                ),
+                "map_to_matrix": float(
+                    matrix_axes_rect["x"] - map_right
+                ),
+                "matrix_to_colorbar": float(
+                    colorbar_axes_rect["x"]
+                    - matrix_axes_rect["x"]
+                    - matrix_axes_rect["w"]
+                ),
             },
             "matrix": {
                 "rows": rows,
