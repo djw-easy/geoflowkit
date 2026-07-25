@@ -271,23 +271,6 @@ labels = louvain(fdf, zone_method='custom', zone_func=my_zones)
 
 **Output**: Flow-level labels where `-1` indicates cross-community flows (origin and destination belong to different communities).
 
-### Manifold Learning (FTSNE)
-
-```python
-from geoflowkit import FTSNE
-
-# Global interpretability (separate O and D)
-transformer = FTSNE(perplexity=200, learning_rate='auto')
-X_embedded = transformer.fit_transform(
-    fdf, identity={'o': 0, 'd': 1}
-)
-
-# Local interpretability (union O and D)
-X_embedded = transformer.fit_transform(
-    fdf, union={('o', 'd'): (0, 1)}
-)
-```
-
 ### Location Centrality (I-index)
 
 The I-index quantifies the irreplaceability of a location based on flows, combining flow volume and flow length into a single metric following the H-index principle.
@@ -314,7 +297,7 @@ Jupyter notebook examples are available in the `examples/` folder:
 - [basic_usage.ipynb](examples/basic_usage.ipynb) - Basic usage of Flow, FlowSeries, and FlowDataFrame
 - [clustering.ipynb](examples/clustering.ipynb) - Flow clustering and community detection
 - [kl_function.ipynb](examples/kl_function.ipynb) - K/L functions for spatial clustering detection
-- [visualization.ipynb](examples/visualization.ipynb) - OD Matrix, MapTrix, and FTSNE visualizations
+- [maptrix_demo.py](examples/maptrix_demo.py) - OD Matrix and MapTrix visualization demo
 - [centrality.ipynb](examples/centrality.ipynb) - I-index for location irreplaceability
 
 ## API Reference
@@ -330,7 +313,6 @@ Jupyter notebook examples are available in the `examples/` folder:
 - `CNMFlow`: Clauset-Newman-Moore community detection
 - `LouvainFlow`: Louvain community detection
 - `STOCSFlow`: Spatial Tabu Optimization for Community Structure
-- `FTSNE`: A Variant of t-SNE for Flow Data
 - `ODMatrixVisualizer`: OD matrix heatmap visualization
 - `MapTrixVisualizer`: MapTrix layout (matrix + maps + guide lines)
 

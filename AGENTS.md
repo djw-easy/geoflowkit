@@ -69,10 +69,6 @@ geoflowkit/
 │   ├── kmeans.py        # KMeansFlow, kmeans()
 │   ├── community.py     # CNMFlow, LouvainFlow, STOCSFlow + convenience functions
 │   └── _graph_utils.py  # flows_to_graph(), assign_flow_labels(), zone assignment utilities
-├── manifold/            # FTSNE for dimensionality reduction
-│   └── ftsne/
-│       ├── ftsne.py     # Main FTSNE class
-│       └── utils.py     # Gradient descent, KL divergence, probability calculations
 ├── visualization/       # OD Matrix and MapTrix visualizations
 │   ├── od_matrix.py     # ODMatrixVisualizer — heatmap of origin-destination flows
 │   ├── maptrix.py       # MapTrixVisualizer — rotated matrix + maps + guide lines
@@ -114,7 +110,6 @@ geoflowkit/
 
 ## Notable Implementation Details
 
-- FTSNE uses sklearn's parameter validation via `@validate_params` decorator
 - Clustering algorithms (kmedoid, dbscan, kmeans) use flow-specific distance metrics
 - KMeansFlow implements K-Means with flow-specific distance for assignment; cluster centers are virtual flows (4D means of assigned flows, converted to Flow objects), not actual data points
 - Community detection algorithms (CNM, Louvain, STOCS) convert FlowDataFrame to a networkx graph via `flows_to_graph()`, then detect communities on the graph; flow-level labels are derived from zone-level community assignments (-1 for cross-community flows)

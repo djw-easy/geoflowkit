@@ -5,7 +5,9 @@ __pycache__/
 dist/
 build/
 geoflowkit.egg-info/
+backups/
 
+.agents/
 .claude/
 .worktrees/
 .codegraph/

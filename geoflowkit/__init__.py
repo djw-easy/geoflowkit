@@ -1,4 +1,4 @@
-__version__ = "0.1.6"
+__version__ = "0.3.0"
 
 from geoflowkit.flow import Flow
 from geoflowkit.flowseries import FlowSeries
@@ -19,8 +19,6 @@ from geoflowkit.clustering import (
     LouvainFlow, louvain,
     STOCSFlow, stocs,
 )
-
-from geoflowkit.manifold import FTSNE
 
 from geoflowkit.visualization import (
     ODMatrixVisualizer,
