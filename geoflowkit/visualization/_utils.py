@@ -194,11 +194,12 @@ def _linear_scaling(arr, out_range=(0.5, 2.0)):
 # ---------------------------------------------------------------------------
 
 def _rotate_matrix(ax, matrix, cmap='OrRd', vmin=None, vmax=None):
-    """Draw a matrix rotated 45 degrees counter-clockwise.
+    """Draw a matrix rotated 45 degrees clockwise around its centre.
 
-    The rotation is performed around the top-left corner so that rows
-    fan out toward the upper-left and columns fan out toward the
-    lower-left — the standard MapTrix layout.
+    Matplotlib uses an upward-pointing y axis, so a ``-45`` degree data
+    transform is the equivalent of the clockwise screen-space rotation
+    used by the static MapTrix layout.  Rotating around the matrix centre
+    keeps rectangular and asymmetric matrices centred in their axes.
 
     Parameters
     ----------
@@ -220,7 +221,7 @@ def _rotate_matrix(ax, matrix, cmap='OrRd', vmin=None, vmax=None):
         cell coordinates to rotated display coordinates).
     """
     rows, cols = matrix.shape
-    center_x, center_y = -0.5, -0.5  # top-left corner as rotation centre
+    center_x, center_y = cols / 2.0, rows / 2.0
 
     transform = (
         Affine2D()
@@ -253,7 +254,7 @@ def _rotate_matrix(ax, matrix, cmap='OrRd', vmin=None, vmax=None):
         (corners - [center_x, center_y]) @ rot_mat.T + [center_x, center_y]
     )
 
-    pad = 0.1
+    pad = max(rows, cols) * 0.04
     ax.set_xlim(
         rotated_corners[:, 0].min() - pad,
         rotated_corners[:, 0].max() + pad,
@@ -284,6 +285,7 @@ def _rotate_matrix(ax, matrix, cmap='OrRd', vmin=None, vmax=None):
 
     ax.axes.xaxis.set_visible(False)
     ax.axes.yaxis.set_visible(False)
+    ax.set_aspect('equal', adjustable='box')
 
     return im, transform
 

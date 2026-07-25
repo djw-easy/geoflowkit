@@ -1,19 +1,19 @@
-"""MapTrix visualization demo using Shenzhen taxi flow data.
+"""Improved static MapTrix demo using Shenzhen taxi flow data.
 
 This script demonstrates how to:
 1. Load flow data from CSV and border polygons from GeoPackage
 2. Sample flows and clip to the city boundary
-3. Create a MapTrix visualization with OD matrix + maps + guide lines
+3. Create a centred MapTrix matrix with non-crossing row/column leaders
+4. Inspect the exported static layout geometry
 
 Usage:
-    python examples/maptrix_demo.py
+    python maptrix_demo.py
 """
 
 import warnings
 
 import numpy as np
 import geopandas as gpd
-import matplotlib.pyplot as plt
 
 from geoflowkit import read_csv
 from geoflowkit.visualization import MapTrixVisualizer
@@ -55,22 +55,32 @@ print(f'  After clipping: {len(fdf_sample):,} flows remain')
 # 3. MapTrix visualization
 # ---------------------------------------------------------------------------
 print('Rendering MapTrix ...')
-fig = MapTrixVisualizer(
+visualizer = MapTrixVisualizer(
     origin_zones=border,
     zone_id_col='Name',
     weight='count',
     size_weight='length',
-    matrix_cmap='OrRd',
-    line_color='black',
-    line_alpha=0.5,
+    matrix_cmap='YlOrRd',
+    map_cmap='YlOrRd',
+    origin_line_color='#2878B5',
+    destination_line_color='#D97706',
+    line_alpha=0.72,
+    leader_linewidth=1.25,
     show_labels=True,
-    label_fontsize=9,
-    out_title='Outflow',
-    in_title='Inflow',
-    title_fontsize=16,
+    label_fontsize=8,
+    out_title='Origins · district outflow',
+    in_title='Destinations · district inflow',
+    matrix_title='Shenzhen taxi flows · origins × destinations',
+    title_fontsize=12,
     include_self_flows=False,
-    width_ratios=[1, 1.5],
-).fit_plot(fdf_sample, figsize=(16, 9))
+)
+fig = visualizer.fit_plot(fdf_sample, figsize=(16, 9))
 
-fig.savefig('maptrix_demo.png', dpi=150, bbox_inches='tight')
+fig.savefig('maptrix_demo.png', dpi=160, facecolor='white')
+layout = visualizer.layout_
+print(
+    f'  Layout: {len(layout["origin_leaders"])} row leaders, '
+    f'{len(layout["destination_leaders"])} column leaders'
+)
+print(f'  Shared row/column order: {layout["same_entity_set"]}')
 print('Saved: maptrix_demo.png')
