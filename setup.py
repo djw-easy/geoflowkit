@@ -18,7 +18,7 @@ setup(
     author="GeoFlow Developer",
     author_email="djw@lreis.ac.cn",
     description="A package for geospatial flow analysis and visualization",
-    long_description=open("README.md").read(),
+    long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/djw-easy/geoflowkit",
     classifiers=[
