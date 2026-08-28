@@ -5,6 +5,8 @@ from :class:`~geoflowkit.flowdataframe.FlowDataFrame` instances, and the
 :func:`od_matrix` convenience function.
 """
 
+from collections.abc import Callable
+
 import geopandas as gpd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -43,9 +45,18 @@ class ODMatrixVisualizer:
     dest_zone_id_col : str, optional
         Column in *dest_zones* for zone identifier.  ``None`` uses
         *zone_id_col*.
-    weight : str, default='count'
+    weight : str or callable, default='count'
         Aggregation weight: ``'count'``, ``'length'``,
-        ``'divergence'``, or ``'volume'``.
+        ``'divergence'``, ``'volume'``, or a numeric column name.  A
+        callable is shorthand for count aggregation followed by that
+        callable as *weight_transform*.
+    weight_transform : callable, optional
+        NumPy-compatible function applied to the complete OD matrix after
+        aggregation, for example ``np.log1p``.  It must return a finite
+        array of the same shape and preserve zero values.
+    cbar_label : str, optional
+        Colorbar title.  A readable label is inferred from *weight* and
+        *weight_transform* when omitted.
     size_weight : str, optional
         When set, overlay proportional circles whose area reflects
         this metric (same options as *weight*).  Color remains
@@ -53,7 +64,8 @@ class ODMatrixVisualizer:
     cmap : str or Colormap, default='OrRd'
         Colormap for the heatmap.
     vmin, vmax : float, optional
-        Colormap range.  When ``None`` the range is inferred from data.
+        Colormap range in transformed display units.  When ``None`` the
+        range is inferred from data.
     show_labels : bool, default=True
         Whether to show zone ID labels on the axes.
     label_fontsize : int, default=10
@@ -67,8 +79,10 @@ class ODMatrixVisualizer:
     Attributes
     ----------
     matrix_ : np.ndarray
-        The ``(n_origin_zones, n_dest_zones)`` OD matrix (set after
-        :meth:`fit`).
+        The transformed ``(n_origin_zones, n_dest_zones)`` display matrix
+        (set after :meth:`fit`).
+    raw_matrix_ : np.ndarray
+        The corresponding matrix before *weight_transform* is applied.
     size_matrix_ : np.ndarray or None
         Size values for each cell (same shape as *matrix_*), or
         ``None`` when *size_weight* is not set.
@@ -101,7 +115,9 @@ class ODMatrixVisualizer:
         dest_zones: gpd.GeoDataFrame | None = None,
         zone_id_col: str | None = None,
         dest_zone_id_col: str | None = None,
-        weight: str = 'count',
+        weight: str | Callable = 'count',
+        weight_transform: Callable | None = None,
+        cbar_label: str | None = None,
         size_weight: str | None = None,
         cmap: str | plt.Colormap = 'OrRd',
         vmin: float | None = None,
@@ -117,7 +133,28 @@ class ODMatrixVisualizer:
         self.zone_id_col = zone_id_col
         self.dest_zone_id_col = dest_zone_id_col if dest_zone_id_col is not None else zone_id_col
 
+        if callable(weight):
+            if weight_transform is not None:
+                raise ValueError(
+                    "A callable weight cannot be combined with "
+                    "weight_transform"
+                )
+            weight_transform = weight
+            weight = 'count'
+        elif not isinstance(weight, str):
+            raise TypeError("weight must be a string or callable")
+        if weight_transform is not None and not callable(weight_transform):
+            raise TypeError("weight_transform must be callable or None")
+        if cbar_label is not None and not isinstance(cbar_label, str):
+            raise TypeError("cbar_label must be a string or None")
+
         self.weight = weight
+        self.weight_transform = weight_transform
+        self.cbar_label = (
+            cbar_label
+            if cbar_label is not None
+            else self._default_cbar_label(weight, weight_transform)
+        )
         self.size_weight = size_weight
         self.cmap = cmap
         self.vmin = vmin
@@ -127,6 +164,7 @@ class ODMatrixVisualizer:
         self.include_self_flows = include_self_flows
 
         self.matrix_ = None
+        self.raw_matrix_ = None
         self.size_matrix_ = None
         self.o_ids_ = None
         self.d_ids_ = None
@@ -137,9 +175,45 @@ class ODMatrixVisualizer:
         self._outflows = None
         self._inflows = None
         self._raw_matrix = None
+        self._display_matrix = None
         self._raw_size_matrix = None
         self._o_all_ids = None
         self._d_all_ids = None
+
+    @staticmethod
+    def _default_cbar_label(weight, weight_transform):
+        if weight_transform is None:
+            return str(weight).capitalize()
+        transform_name = getattr(weight_transform, '__name__', '')
+        if transform_name and transform_name != '<lambda>':
+            return f"{transform_name}({weight})"
+        return f"Transformed {weight}"
+
+    def _apply_weight_transform(self, matrix):
+        """Apply and validate the post-aggregation display transform."""
+        if self.weight_transform is None:
+            return matrix.copy()
+        try:
+            transformed = np.asarray(
+                self.weight_transform(matrix.copy()),
+                dtype=float,
+            )
+        except Exception as exc:
+            raise ValueError("weight_transform failed") from exc
+        if transformed.shape != matrix.shape:
+            raise ValueError(
+                "weight_transform must return an array with the same shape"
+            )
+        if not np.all(np.isfinite(transformed)):
+            raise ValueError(
+                "weight_transform must return only finite values"
+            )
+        zero_mask = np.isclose(matrix, 0.0)
+        if zero_mask.any() and not np.allclose(
+            transformed[zero_mask], 0.0,
+        ):
+            raise ValueError("weight_transform must preserve zero values")
+        return transformed
 
     # ------------------------------------------------------------------
     # Fit
@@ -208,6 +282,7 @@ class ODMatrixVisualizer:
             np.fill_diagonal(full_matrix, 0.0)
 
         self._raw_matrix = full_matrix
+        self._display_matrix = self._apply_weight_transform(full_matrix)
         self._raw_size_matrix = size_matrix if size_values is not None else None
 
         o_ids = [z for z in o_all_ids if self._outflows[z] > 0]
@@ -222,7 +297,9 @@ class ODMatrixVisualizer:
 
         o_pos = [o_to_idx[z] for z in o_ids]
         d_pos = [d_to_idx[z] for z in d_ids]
-        self.matrix_ = full_matrix[np.ix_(o_pos, d_pos)]
+        selected = np.ix_(o_pos, d_pos)
+        self.raw_matrix_ = full_matrix[selected].copy()
+        self.matrix_ = self._display_matrix[selected].copy()
         self.size_matrix_ = (
             size_matrix[np.ix_(o_pos, d_pos)]
             if self._raw_size_matrix is not None else None
@@ -304,6 +381,7 @@ class ODMatrixVisualizer:
         if colorbar:
             cbar = plt.colorbar(im, ax=ax, shrink=0.9)
             cbar.ax.tick_params(labelsize=self.label_fontsize)
+            cbar.set_label(self.cbar_label, fontsize=self.label_fontsize)
 
         return ax
 
@@ -328,6 +406,4 @@ class ODMatrixVisualizer:
         """
         self.fit(fdf)
         return self.plot(ax=ax, figsize=figsize, colorbar=colorbar)
-
-
 

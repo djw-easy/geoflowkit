@@ -144,8 +144,9 @@ def _get_weights(fdf, weight='count'):
         - ``'count'`` — unit weight (each flow counts as 1)
         - ``'length'`` — flow length (Euclidean distance)
         - ``'divergence'`` — flow angle in radians
-        - ``'volume'`` — numeric ``'volume'`` column (falls back to 1
-          when the column does not exist)
+        - any numeric column name — use that column directly;
+        - ``'volume'`` retains the historical unit-weight fallback when the
+          column does not exist.
 
     Returns
     -------
@@ -156,8 +157,11 @@ def _get_weights(fdf, weight='count'):
         return fdf.length.values
     if weight == 'divergence':
         return fdf.angle.values
-    if weight == 'volume' and 'volume' in fdf.columns:
-        return fdf['volume'].values
+    if weight in fdf.columns:
+        values = np.asarray(fdf[weight], dtype=float)
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"Weight column {weight!r} must contain finite values")
+        return values
     return np.ones(len(fdf))
 
 

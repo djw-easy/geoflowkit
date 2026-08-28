@@ -5,9 +5,13 @@ This script demonstrates how to:
 2. Sample flows and clip to the city boundary
 3. Create a centred MapTrix matrix with diagonal-horizontal leaders
 4. Label the two leader-free matrix edges with district names
-5. Adjust map size, map-to-matrix gap, and colorbar geometry
-6. Encode regional totals with bounded leader/marker sizes
-7. Inspect the exported static layout geometry
+5. Apply a post-aggregation log transform to matrix colour values
+6. Scale the matrix symmetrically within the map stack
+7. Adjust semantic gaps and colorbar height without manual axes rectangles
+8. Encode regional totals with bounded leader/marker sizes
+9. Minimise leader crossings even when crossings are allowed
+10. Display pale component frames for layout debugging
+11. Inspect the exported static layout geometry
 
 Usage:
     python examples/maptrix_demo.py
@@ -65,6 +69,8 @@ visualizer = MapTrixVisualizer(
     origin_zones=border,
     zone_id_col='Name',
     weight='count',
+    weight_transform=np.log1p,
+    cbar_label='log(1 + count)',
     size_weight='length',
     matrix_cmap='YlOrRd',
     map_cmap='viridis',
@@ -72,14 +78,17 @@ visualizer = MapTrixVisualizer(
     destination_line_color='#D97706',
     line_alpha=0.72,
     leader_routing='diagonal-horizontal',
+    allow_leader_crossings=True,
     leader_angle=45,
     leader_width_range=(0.9, 5.0),
     centroid_size_range=(45, 340),
-    origin_map_rect=(0.04, 0.56, 0.385, 0.36),
-    destination_map_rect=(0.04, 0.08, 0.385, 0.36),
-    matrix_rect=(0.346, 0.08, 0.525, 0.84),
-    colorbar_rect=(0.87, 0.13, 0.014, 0.74),
+    map_vertical_gap=0.14,
+    map_matrix_gap=-0.10,
+    matrix_colorbar_gap=0.09,
+    colorbar_height_ratio=0.88,
+    matrix_scale=0.85,
     layout_rect=(0.02, 0.03, 0.94, 0.93),
+    show_layout_frames=True,
     show_labels=True,
     label_fontsize=8,
     matrix_label_fontsize=8,
@@ -89,12 +98,18 @@ visualizer = MapTrixVisualizer(
     out_title='Origins · district outflow',
     in_title='Destinations · district inflow',
     title_fontsize=12,
-    map_title_pad=5,
+    map_title_pad=-7,
     include_self_flows=False,
 )
 fig = visualizer.fit_plot(fdf_sample, figsize=(16, 9))
 
-fig.savefig(OUTPUT_PATH, dpi=160, facecolor='white')
+fig.savefig(
+    OUTPUT_PATH,
+    dpi=160,
+    facecolor='white',
+    bbox_inches='tight',
+    pad_inches=0.05,
+)
 layout = visualizer.layout_
 print(
     f'  Layout: {len(layout["origin_leaders"])} row leaders, '
@@ -103,6 +118,7 @@ print(
 print(f'  Shared row/column order: {layout["same_entity_set"]}')
 print(f'  Row order: {layout["row_order"]}')
 print(f'  Column order: {layout["column_order"]}')
+print(f'  Leader crossings: {layout["leader_crossings"]}')
 print(
     '  Minimum diagonal gaps (px): '
     f'{layout["minimum_diagonal_gap"]}'

@@ -9,11 +9,13 @@ affect the visual encoding; ordering and routing depend on geography.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import lil_matrix
 from shapely.geometry import LineString, Point
@@ -42,8 +44,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     Parameters
     ----------
     origin_zones, dest_zones, zone_id_col, dest_zone_id_col, weight,
-    size_weight, matrix_cmap, vmin, vmax, show_labels, label_fontsize,
-    include_self_flows
+    weight_transform, cbar_label, size_weight, matrix_cmap, vmin, vmax,
+    show_labels, label_fontsize, include_self_flows
         See :class:`~geoflowkit.visualization.ODMatrixVisualizer`.
     map_label_fontsize : int, optional
         Font size for zone labels on the maps.  Defaults to
@@ -81,11 +83,25 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         Colours for row and column leaders.
     line_alpha : float, default=0.72
         Leader opacity.
+    show_matrix_ports : bool, default=True
+        Whether to draw circular markers where leaders meet the matrix edges.
     leader_routing : {'diagonal-horizontal', 'horizontal-diagonal'}
         Segment order from map site to matrix port.  The default follows
         the original MapTrix design: diagonal map-to-bend segment,
         followed by a horizontal bend-to-matrix segment.  The alternative
         retains the previous GeoFlowKit layout.
+    allow_leader_crossings : bool, default=False
+        Whether leaders may intersect when ``leader_routing`` is
+        ``"diagonal-horizontal"``.  Set to ``True`` when a fixed row or
+        column order makes a crossing-free fixed-slope layout infeasible.
+        Permissive layouts are still optimised lexicographically: first
+        minimise crossings, then improve leader clearance, then minimise
+        route length and site displacement.  This has no effect for
+        ``"horizontal-diagonal"`` routing.
+    allow_reorder : bool, default=True
+        Whether MapTrix may reorder matrix rows and columns for geographic
+        placement and leader routing.  Set to ``False`` to preserve the
+        input order of ``origin_zones`` and ``dest_zones``.
     leader_angle : float, default=45
         Absolute diagonal angle in degrees.  This is an implementation
         default, not a value prescribed by the MapTrix paper.  All
@@ -99,24 +115,30 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     leader_linewidth : float, default=1.25
         Fallback fixed width when ``leader_width_range=None``.  Must be
         positive and no greater than 12 points.
-    origin_map_rect, destination_map_rect, matrix_rect, colorbar_rect :
-        tuple of four floats, optional
-        ``(left, bottom, width, height)`` in normalized figure
-        coordinates.  When ``layout_rect`` is provided, these values become
-        logical layout coordinates and their joint bounding box is mapped
-        into ``layout_rect``.  Map width/height directly control map size.
-        The horizontal map-to-matrix gap is ``matrix_rect.left`` minus the
-        maps' right edge; it may be negative when the axes rectangles
-        intentionally overlap.  ``colorbar_rect`` controls both colorbar
-        distance and length.  Defaults follow the proportions in
-        ``maptrix-static-layout-spec.md``.
-    layout_rect : tuple of four floats, optional
+    map_vertical_gap : float, default=0.14
+        Signed vertical gap between the two equal-sized map frames, as a
+        fraction of the reference layout height at ``matrix_scale=1``.
+        Negative values make the map frames overlap.
+    map_matrix_gap : float, default=0.10
+        Signed horizontal gap from the maps' common right edge to the
+        rotated matrix frame, as a fraction of matrix frame height.
+    matrix_colorbar_gap : float, default=0.05
+        Signed horizontal gap from the matrix frame to the colorbar frame,
+        as a fraction of matrix frame height.
+    colorbar_height_ratio : float, default=0.88
+        Colorbar frame height divided by matrix frame height.  The colorbar
+        is vertically centred on the matrix.
+    matrix_scale : float, default=1
+        Uniform scale of the rotated matrix frame relative to the map stack,
+        between 0.5 and 1.5.  Scaling is vertically symmetric: the matrix's
+        top and bottom offsets from the map stack remain equal.
+    show_layout_frames : bool, default=False
+        Draw pale-grey outlines around the two maps, rotated-matrix bounding
+        box, and colorbar.  Intended as a layout debugging aid.
+    layout_rect : tuple of four floats, default=(0.04, 0.08, 0.894, 0.84)
         Target ``(left, bottom, width, height)`` region in normalized figure
-        coordinates.  When provided, the four component rectangles are
-        treated as one relative layout: their joint bounding box is
-        independently scaled in x and y to fill this target region.  When
-        omitted, component rectangles retain their original absolute figure
-        coordinate semantics.
+        coordinates.  The component layout is uniformly fitted and centred
+        in this region using display-space dimensions.
     corridor_gap : float, default=0.018
         Horizontal gap, in figure coordinates, between a map and the
         bend rail for its leaders.
@@ -126,7 +148,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         capped max-min objective: crossings remain forbidden even when
         this gap cannot be reached.  For legacy routing it controls the
         vertical separation between adjacent map sites.
-    map_title_pad : float, default=12
+    map_title_pad : float, default=0
         Distance, in points, between each map's left border and its
         vertical ``out_title`` or ``in_title`` axis label.
     cbar_kwds : dict, optional
@@ -144,10 +166,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         Axes for the origin map, destination map, matrix, and colorbar.
     """
 
-    _DEFAULT_ORIGIN_RECT = (0.04, 0.56, 0.30, 0.36)
-    _DEFAULT_DESTINATION_RECT = (0.04, 0.08, 0.30, 0.36)
-    _DEFAULT_MATRIX_RECT = (0.39, 0.08, 0.52, 0.84)
-    _DEFAULT_COLORBAR_RECT = (0.92, 0.13, 0.014, 0.74)
+    _COLORBAR_WIDTH_RATIO = 0.028
+    _LAYOUT_FRAME_COLOR = "#C7CCD1"
+    _LAYOUT_FRAME_LINEWIDTH = 0.7
+    _MIN_MATRIX_SCALE = 0.5
+    _MAX_MATRIX_SCALE = 1.5
     _MAX_CENTROID_SIZE = 2000.0
     _MAX_MATRIX_SYMBOL_SIZE = 1600.0
     _MAX_LEADER_WIDTH = 12.0
@@ -159,7 +182,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         dest_zones: gpd.GeoDataFrame | None = None,
         zone_id_col: str | None = None,
         dest_zone_id_col: str | None = None,
-        weight: str = "count",
+        weight: str | Callable = "count",
+        weight_transform: Callable | None = None,
+        cbar_label: str | None = None,
         size_weight: str | None = None,
         matrix_cmap: str | plt.Colormap = "OrRd",
         vmin: float | None = None,
@@ -171,7 +196,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         origin_line_color="#2878B5",
         destination_line_color="#D97706",
         line_alpha: float = 0.72,
+        show_matrix_ports: bool = True,
         leader_routing: str = "diagonal-horizontal",
+        allow_leader_crossings: bool = False,
+        allow_reorder: bool = True,
         leader_angle: float = 45.0,
         leader_width_range: tuple[float, float] | None = (0.8, 4.5),
         leader_linewidth: float = 1.25,
@@ -186,21 +214,23 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         out_title: str = "Origins · row index",
         in_title: str = "Destinations · column index",
         title_fontsize: int = 13,
-        map_title_pad: float = 12.0,
+        map_title_pad: float = 0.0,
         include_self_flows: bool = True,
-        origin_map_rect: tuple[float, float, float, float] | None = None,
-        destination_map_rect: tuple[float, float, float, float] | None = None,
-        matrix_rect: tuple[float, float, float, float] | None = None,
-        colorbar_rect: tuple[float, float, float, float] | None = None,
-        layout_rect: tuple[float, float, float, float] | None = None,
+        map_vertical_gap: float = 0.14,
+        map_matrix_gap: float = 0.10,
+        matrix_colorbar_gap: float = 0.05,
+        colorbar_height_ratio: float = 0.88,
+        matrix_scale: float = 1.0,
+        show_layout_frames: bool = False,
+        layout_rect: tuple[float, float, float, float] = (
+            0.04, 0.08, 0.894, 0.84,
+        ),
         corridor_gap: float = 0.018,
         min_leader_gap: float = 12.0,
         site_grid_size: int = 7,
         map_facecolor="#F2F4F5",
         map_edgecolor="#8B949E",
         cbar_kwds: dict | None = None,
-        height_ratios: list | None = None,
-        width_ratios: list | None = None,
     ):
         super().__init__(
             origin_zones=origin_zones,
@@ -208,6 +238,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             zone_id_col=zone_id_col,
             dest_zone_id_col=dest_zone_id_col,
             weight=weight,
+            weight_transform=weight_transform,
+            cbar_label=cbar_label,
             size_weight=size_weight,
             cmap=matrix_cmap,
             vmin=vmin,
@@ -222,14 +254,6 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self._validate_zones(
             self.dest_zones, self.dest_zone_id_col, "dest_zones",
         )
-
-        if height_ratios is not None or width_ratios is not None:
-            warnings.warn(
-                "height_ratios and width_ratios are deprecated; use the "
-                "*_rect layout arguments instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
 
         self.matrix_cmap = matrix_cmap
         self.map_cmap = map_cmap
@@ -248,12 +272,21 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.origin_line_color = origin_line_color
         self.destination_line_color = destination_line_color
         self.line_alpha = line_alpha
+        if not isinstance(show_matrix_ports, (bool, np.bool_)):
+            raise TypeError("show_matrix_ports must be a boolean")
+        self.show_matrix_ports = bool(show_matrix_ports)
         valid_routing = {"diagonal-horizontal", "horizontal-diagonal"}
         if leader_routing not in valid_routing:
             raise ValueError(
                 f"leader_routing must be one of {sorted(valid_routing)}"
             )
         self.leader_routing = leader_routing
+        if not isinstance(allow_leader_crossings, (bool, np.bool_)):
+            raise TypeError("allow_leader_crossings must be a boolean")
+        self.allow_leader_crossings = bool(allow_leader_crossings)
+        if not isinstance(allow_reorder, (bool, np.bool_)):
+            raise TypeError("allow_reorder must be a boolean")
+        self.allow_reorder = bool(allow_reorder)
         self.leader_angle = float(leader_angle)
         if not 0.0 < self.leader_angle < 90.0:
             raise ValueError("leader_angle must be between 0 and 90 degrees")
@@ -319,47 +352,41 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.cbar_label_fontsize = (
             cbar_label_fontsize if cbar_label_fontsize is not None else label_fontsize
         )
-        configured_rects = {
-            "origin_map": self._validate_rect(
-                origin_map_rect or self._DEFAULT_ORIGIN_RECT,
-                "origin_map_rect",
-            ),
-            "destination_map": self._validate_rect(
-                destination_map_rect or self._DEFAULT_DESTINATION_RECT,
-                "destination_map_rect",
-            ),
-            "matrix": self._validate_rect(
-                matrix_rect or self._DEFAULT_MATRIX_RECT,
-                "matrix_rect",
-            ),
-            "colorbar": self._validate_rect(
-                colorbar_rect or self._DEFAULT_COLORBAR_RECT,
-                "colorbar_rect",
-            ),
-        }
-        self._configured_rects = configured_rects
-        self.layout_rect = (
-            self._validate_rect(layout_rect, "layout_rect")
-            if layout_rect is not None
-            else None
+        if not isinstance(show_layout_frames, (bool, np.bool_)):
+            raise TypeError("show_layout_frames must be a boolean")
+        self.show_layout_frames = bool(show_layout_frames)
+        self.matrix_scale = self._validate_bounded_range(
+            matrix_scale,
+            "matrix_scale",
+            self._MIN_MATRIX_SCALE,
+            self._MAX_MATRIX_SCALE,
         )
-        resolved_rects = (
-            self._map_rects_to_layout(configured_rects, self.layout_rect)
-            if self.layout_rect is not None
-            else dict(configured_rects)
+        self.layout_rect = self._validate_rect(layout_rect, "layout_rect")
+        self.map_vertical_gap = self._validate_gap(
+            map_vertical_gap, "map_vertical_gap",
         )
-        self.origin_map_rect = resolved_rects["origin_map"]
-        self.destination_map_rect = resolved_rects["destination_map"]
-        self.matrix_rect = resolved_rects["matrix"]
-        self.colorbar_rect = resolved_rects["colorbar"]
-        destination_top = (
-            self.destination_map_rect[1] + self.destination_map_rect[3]
+        if not -1.0 < self.map_vertical_gap < 1.0:
+            raise ValueError("map_vertical_gap must be between -1 and 1")
+        self.map_matrix_gap = self._validate_gap(
+            map_matrix_gap, "map_matrix_gap",
         )
-        if destination_top > self.origin_map_rect[1]:
+        self.matrix_colorbar_gap = self._validate_gap(
+            matrix_colorbar_gap, "matrix_colorbar_gap",
+        )
+        self.colorbar_height_ratio = self._validate_gap(
+            colorbar_height_ratio, "colorbar_height_ratio",
+        )
+        if not 0.0 < self.colorbar_height_ratio <= 1.0:
             raise ValueError(
-                "Origin and destination map rectangles must use separate "
-                "vertical corridors"
+                "colorbar_height_ratio must be greater than 0 and "
+                "no greater than 1"
             )
+        self._set_resolved_rects({
+            "origin_map": None,
+            "destination_map": None,
+            "matrix": None,
+            "colorbar": None,
+        })
         self.corridor_gap = float(corridor_gap)
         if self.corridor_gap < 0:
             raise ValueError("corridor_gap must be non-negative")
@@ -372,6 +399,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.cbar_kwds = {} if cbar_kwds is None else dict(cbar_kwds)
 
         self._full_matrix = None
+        self._full_raw_matrix = None
         self._full_size_matrix = None
         self._o_zone_to_idx = None
         self._d_zone_to_idx = None
@@ -388,6 +416,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.layout_ = None
         self._leader_geometry = None
         self._fixed_layout_solution = None
+        self._logical_layout = None
         self.o_sites_ = None
         self.d_sites_ = None
 
@@ -405,31 +434,173 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         return rect
 
     @staticmethod
-    def _map_rects_to_layout(rects, layout_rect):
-        """Map a group of logical rectangles into one figure region."""
-        logical_left = min(rect[0] for rect in rects.values())
-        logical_bottom = min(rect[1] for rect in rects.values())
-        logical_right = max(
-            rect[0] + rect[2] for rect in rects.values()
+    def _validate_gap(value, name):
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+        return value
+
+    @staticmethod
+    def _validate_bounded_range(value, name, minimum, maximum):
+        value = float(value)
+        if not np.isfinite(value) or not minimum <= value <= maximum:
+            raise ValueError(
+                f"{name} must be between {minimum:g} and {maximum:g}"
+            )
+        return value
+
+    def _set_resolved_rects(self, rects):
+        self.origin_map_rect = rects["origin_map"]
+        self.destination_map_rect = rects["destination_map"]
+        self.matrix_rect = rects["matrix"]
+        self.colorbar_rect = rects["colorbar"]
+
+    @staticmethod
+    def _zone_display_aspect(zones):
+        """Return the natural width/height ratio for a zone layer."""
+        if len(zones) == 0:
+            return 1.0
+        minx, miny, maxx, maxy = zones.total_bounds
+        width = float(maxx - minx)
+        height = float(maxy - miny)
+        if width <= 0.0 or height <= 0.0:
+            return 1.0
+        data_aspect = 1.0
+        if zones.crs is not None and zones.crs.is_geographic:
+            mean_latitude = float((miny + maxy) / 2.0)
+            cosine = abs(np.cos(np.deg2rad(mean_latitude)))
+            data_aspect = 1.0 / max(cosine, 1e-6)
+        return width / (height * data_aspect)
+
+    def _common_map_aspect(self):
+        """Balance the natural aspects while keeping both map frames equal."""
+        origin_aspect = self._zone_display_aspect(self.origin_zones)
+        destination_aspect = self._zone_display_aspect(self.dest_zones)
+        return float(np.sqrt(origin_aspect * destination_aspect))
+
+    def _matrix_axes_frame_ratio(self):
+        """Axes-side / rotated-matrix-frame-side for the current padding."""
+        rows, cols = self.matrix_.shape
+        frame_side = (rows + cols) / np.sqrt(2.0)
+        pad = max(rows, cols) * 0.04
+        return float((frame_side + 2.0 * pad) / frame_side)
+
+    def _resolve_automatic_rects(self, fig):
+        """Solve semantic layout constraints in display-pixel space."""
+        figure_width = float(fig.bbox.width)
+        figure_height = float(fig.bbox.height)
+        left, bottom, width, height = self.layout_rect
+        target_left = left * figure_width
+        target_bottom = bottom * figure_height
+        target_width = width * figure_width
+        target_height = height * figure_height
+
+        reference_height = 1.0
+        map_height = (
+            reference_height - self.map_vertical_gap
+        ) / 2.0
+        map_width = self._common_map_aspect() * map_height
+        matrix_frame_size = self.matrix_scale
+        matrix_bottom = (reference_height - matrix_frame_size) / 2.0
+        matrix_left = (
+            map_width + self.map_matrix_gap * matrix_frame_size
         )
-        logical_top = max(
-            rect[1] + rect[3] for rect in rects.values()
+        colorbar_left = (
+            matrix_left + matrix_frame_size
+            + self.matrix_colorbar_gap * matrix_frame_size
+        )
+        colorbar_width = self._COLORBAR_WIDTH_RATIO * matrix_frame_size
+        colorbar_height = (
+            self.colorbar_height_ratio * matrix_frame_size
+        )
+        colorbar_bottom = (reference_height - colorbar_height) / 2.0
+
+        logical_rects = {
+            "origin_map": (
+                0.0,
+                map_height + self.map_vertical_gap,
+                map_width,
+                map_height,
+            ),
+            "destination_map": (0.0, 0.0, map_width, map_height),
+            "matrix_frame": (
+                matrix_left,
+                matrix_bottom,
+                matrix_frame_size,
+                matrix_frame_size,
+            ),
+            "colorbar": (
+                colorbar_left,
+                colorbar_bottom,
+                colorbar_width,
+                colorbar_height,
+            ),
+        }
+        logical_left = min(rect[0] for rect in logical_rects.values())
+        logical_right = max(
+            rect[0] + rect[2] for rect in logical_rects.values()
         )
         logical_width = logical_right - logical_left
+        logical_bottom = min(rect[1] for rect in logical_rects.values())
+        logical_top = max(
+            rect[1] + rect[3] for rect in logical_rects.values()
+        )
         logical_height = logical_top - logical_bottom
-        target_left, target_bottom, target_width, target_height = layout_rect
-        scale_x = target_width / logical_width
-        scale_y = target_height / logical_height
+        scale = min(
+            target_height / logical_height,
+            target_width / logical_width,
+        )
+        base_left = (
+            target_left + (target_width - logical_width * scale) / 2.0
+            - logical_left * scale
+        )
+        base_bottom = (
+            target_bottom
+            + (target_height - logical_height * scale) / 2.0
+            - logical_bottom * scale
+        )
 
-        return {
-            name: (
-                target_left + (rect[0] - logical_left) * scale_x,
-                target_bottom + (rect[1] - logical_bottom) * scale_y,
-                rect[2] * scale_x,
-                rect[3] * scale_y,
+        def to_figure_rect(rect):
+            rect_left, rect_bottom, rect_width, rect_height = rect
+            return (
+                (base_left + rect_left * scale) / figure_width,
+                (base_bottom + rect_bottom * scale) / figure_height,
+                rect_width * scale / figure_width,
+                rect_height * scale / figure_height,
             )
-            for name, rect in rects.items()
-        }
+
+        origin_rect = to_figure_rect(logical_rects["origin_map"])
+        destination_rect = to_figure_rect(
+            logical_rects["destination_map"]
+        )
+        colorbar_rect = to_figure_rect(logical_rects["colorbar"])
+        matrix_frame_rect = logical_rects["matrix_frame"]
+        matrix_frame_center_x = (
+            base_left
+            + (matrix_frame_rect[0] + matrix_frame_rect[2] / 2.0) * scale
+        )
+        matrix_frame_center_y = (
+            base_bottom
+            + (matrix_frame_rect[1] + matrix_frame_rect[3] / 2.0) * scale
+        )
+        matrix_axes_side = (
+            scale * matrix_frame_size * self._matrix_axes_frame_ratio()
+        )
+        matrix_rect = (
+            (matrix_frame_center_x - matrix_axes_side / 2.0)
+            / figure_width,
+            (matrix_frame_center_y - matrix_axes_side / 2.0)
+            / figure_height,
+            matrix_axes_side / figure_width,
+            matrix_axes_side / figure_height,
+        )
+        self._logical_layout = logical_rects
+        self._set_resolved_rects({
+            "origin_map": origin_rect,
+            "destination_map": destination_rect,
+            "matrix": matrix_rect,
+            "colorbar": colorbar_rect,
+        })
 
     @staticmethod
     def _validate_bounded_positive(value, name, maximum):
@@ -482,7 +653,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         """Aggregate flows and establish geography-only row/column order."""
         super().fit(fdf)
 
-        self._full_matrix = self._raw_matrix.copy()
+        self._full_matrix = self._display_matrix.copy()
+        self._full_raw_matrix = self._raw_matrix.copy()
         self._full_size_matrix = (
             self._raw_size_matrix.copy()
             if self._raw_size_matrix is not None
@@ -511,15 +683,19 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             and set(origin_ids) == set(destination_ids)
         )
 
-        self.row_order_ = self._order_for_side(
-            origin_ids, self.o_centroids_, side="row",
-        )
-        if self._same_entity_set:
-            self.column_order_ = list(self.row_order_)
-        else:
-            self.column_order_ = self._order_for_side(
-                destination_ids, self.d_centroids_, side="column",
+        if self.allow_reorder:
+            self.row_order_ = self._order_for_side(
+                origin_ids, self.o_centroids_, side="row",
             )
+            if self._same_entity_set:
+                self.column_order_ = list(self.row_order_)
+            else:
+                self.column_order_ = self._order_for_side(
+                    destination_ids, self.d_centroids_, side="column",
+                )
+        else:
+            self.row_order_ = list(origin_ids)
+            self.column_order_ = list(destination_ids)
 
         self.o_order_ = self.row_order_
         self.d_order_ = self.column_order_
@@ -569,6 +745,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.matrix_ = self._full_matrix[
             np.ix_(origin_positions, destination_positions)
         ].copy()
+        self.raw_matrix_ = self._full_raw_matrix[
+            np.ix_(origin_positions, destination_positions)
+        ].copy()
         self.size_matrix_ = (
             self._full_size_matrix[
                 np.ix_(origin_positions, destination_positions)
@@ -580,6 +759,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             for row, origin_id in enumerate(self.row_order_):
                 col = self.column_order_.index(origin_id)
                 self.matrix_[row, col] = np.nan
+                self.raw_matrix_[row, col] = np.nan
                 if self.size_matrix_ is not None:
                     self.size_matrix_[row, col] = np.nan
 
@@ -599,6 +779,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             fig = plt.figure(figsize=figsize, facecolor="white")
         else:
             fig.clf()
+
+        self._resolve_automatic_rects(fig)
 
         ax_origin = fig.add_axes(self.origin_map_rect)
         ax_destination = fig.add_axes(self.destination_map_rect)
@@ -666,11 +848,19 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         )
         self._draw_matrix_ports(ax_matrix)
         fig.canvas.draw()
+        if self.show_layout_frames:
+            self._draw_layout_frames(
+                fig, ax_origin, ax_destination, ax_matrix, ax_colorbar,
+            )
+            fig.canvas.draw()
         self.layout_ = self._export_layout(fig, ax_origin, ax_destination, ax_matrix)
         return fig
 
     def _draw_map_base(self, ax, zones, title):
         """Draw zone polygons and establish a stable map transform."""
+        allocated_position = ax.get_position(original=True).frozen()
+        ax.set_facecolor("none")
+        ax.patch.set_alpha(0.0)
         zones.plot(
             ax=ax,
             facecolor=self.map_facecolor,
@@ -682,8 +872,39 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             minx, miny, maxx, maxy = zones.total_bounds
             pad_x = max((maxx - minx) * 0.045, 0.01)
             pad_y = max((maxy - miny) * 0.045, 0.01)
-            ax.set_xlim(minx - pad_x, maxx + pad_x)
-            ax.set_ylim(miny - pad_y, maxy + pad_y)
+            minx, maxx = minx - pad_x, maxx + pad_x
+            miny, maxy = miny - pad_y, maxy + pad_y
+
+            data_aspect = 1.0
+            if zones.crs is not None and zones.crs.is_geographic:
+                mean_latitude = float((miny + maxy) / 2.0)
+                cosine = abs(np.cos(np.deg2rad(mean_latitude)))
+                data_aspect = 1.0 / max(cosine, 1e-6)
+            figure_width = float(ax.figure.bbox.width)
+            figure_height = float(ax.figure.bbox.height)
+            box_aspect = (
+                allocated_position.width * figure_width
+                / (allocated_position.height * figure_height)
+            )
+            target_range_ratio = data_aspect * box_aspect
+            data_width = float(maxx - minx)
+            data_height = float(maxy - miny)
+            if data_width / data_height < target_range_ratio:
+                expanded_width = data_height * target_range_ratio
+                centre = (minx + maxx) / 2.0
+                minx, maxx = (
+                    centre - expanded_width / 2.0,
+                    centre + expanded_width / 2.0,
+                )
+            else:
+                expanded_height = data_width / target_range_ratio
+                centre = (miny + maxy) / 2.0
+                miny, maxy = (
+                    centre - expanded_height / 2.0,
+                    centre + expanded_height / 2.0,
+                )
+            ax.set_xlim(minx, maxx)
+            ax.set_ylim(miny, maxy)
 
         ax.set_ylabel(
             title,
@@ -694,7 +915,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             rotation=90,
             va="center",
         )
-        ax.set_aspect("equal", adjustable="box")
+        ax.set_position(allocated_position)
+        ax.set_aspect("auto")
         ax.set_xticks([])
         ax.set_yticks([])
         for spine in ax.spines.values():
@@ -846,13 +1068,66 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         kwds = {"orientation": "vertical"}
         kwds.update(self.cbar_kwds)
         colorbar = fig.colorbar(self._im, cax=ax_colorbar, **kwds)
+        ax_colorbar.set_zorder(-1)
         colorbar.ax.tick_params(labelsize=self.cbar_tick_fontsize)
-        colorbar.outline.set_linewidth(0.6)
+        colorbar.outline.set_visible(False)
         colorbar.set_label(
-            self.weight.capitalize(),
+            self.cbar_label,
             fontsize=self.cbar_label_fontsize,
             color="#57606A",
         )
+
+    def _matrix_frame_figure_rect(self, fig, ax_matrix):
+        """Return the rotated matrix's axis-aligned frame in figure units."""
+        rows, cols = self.matrix_.shape
+        corners = np.asarray([
+            (0.0, 0.0),
+            (float(cols), 0.0),
+            (float(cols), float(rows)),
+            (0.0, float(rows)),
+        ])
+        rotated = self._transform.transform(corners)
+        display = ax_matrix.transData.transform(rotated)
+        x0, y0 = display.min(axis=0)
+        x1, y1 = display.max(axis=0)
+        return (
+            float(x0 / fig.bbox.width),
+            float(y0 / fig.bbox.height),
+            float((x1 - x0) / fig.bbox.width),
+            float((y1 - y0) / fig.bbox.height),
+        )
+
+    def _component_frame_rects(
+        self, fig, ax_origin, ax_destination, ax_matrix, ax_colorbar,
+    ):
+        """Return all four visible component frames in figure units."""
+        return {
+            "origin_map": tuple(ax_origin.get_position().bounds),
+            "destination_map": tuple(ax_destination.get_position().bounds),
+            "matrix": self._matrix_frame_figure_rect(fig, ax_matrix),
+            "colorbar": tuple(ax_colorbar.get_position().bounds),
+        }
+
+    def _draw_layout_frames(
+        self, fig, ax_origin, ax_destination, ax_matrix, ax_colorbar,
+    ):
+        """Draw optional pale debug frames in figure coordinates."""
+        for name, rect in self._component_frame_rects(
+            fig, ax_origin, ax_destination, ax_matrix, ax_colorbar,
+        ).items():
+            frame = Rectangle(
+                rect[:2],
+                rect[2],
+                rect[3],
+                transform=fig.transFigure,
+                fill=False,
+                edgecolor=self._LAYOUT_FRAME_COLOR,
+                linewidth=self._LAYOUT_FRAME_LINEWIDTH,
+                zorder=30,
+                clip_on=False,
+            )
+            frame.set_gid(f"maptrix-layout-frame-{name}")
+            fig.add_artist(frame)
 
     def _solve_boundary_orders(
         self, fig, ax_origin, ax_destination, ax_matrix,
@@ -887,56 +1162,17 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             "destination",
             self._inflows,
         )
-        if self._same_entity_set:
-            ids = list(self.row_order_)
-            candidate_orders = self._solve_compatible_orders(
-                ids, [origin_group, destination_group],
+        if not self.allow_reorder:
+            origin_assignment = self._solve_port_site_assignment(
+                list(self.row_order_),
+                [origin_group],
+                fixed_order=self.row_order_,
             )
-            best_layout = None
-            best_gap = -np.inf
-            for shared_order in candidate_orders:
-                try:
-                    origin_assignment = self._solve_port_site_assignment(
-                        ids,
-                        [origin_group],
-                        fixed_order=shared_order,
-                    )
-                    destination_assignment = (
-                        self._solve_port_site_assignment(
-                            ids,
-                            [destination_group],
-                            fixed_order=shared_order,
-                        )
-                    )
-                except RuntimeError:
-                    continue
-                achieved_gap = min(
-                    self._assignment_minimum_clearance(
-                        origin_assignment,
-                    ),
-                    self._assignment_minimum_clearance(
-                        destination_assignment,
-                    ),
-                )
-                if achieved_gap > best_gap:
-                    best_gap = achieved_gap
-                    best_layout = (
-                        list(shared_order),
-                        origin_assignment,
-                        destination_assignment,
-                    )
-                if achieved_gap >= self.min_leader_gap - 1e-6:
-                    break
-            if best_layout is None:
-                raise RuntimeError(
-                    "No globally crossing-free shared order was found "
-                    "for both map corridors."
-                )
-            (
-                shared_order,
-                origin_assignment,
-                destination_assignment,
-            ) = best_layout
+            destination_assignment = self._solve_port_site_assignment(
+                list(self.column_order_),
+                [destination_group],
+                fixed_order=self.column_order_,
+            )
             self._fixed_layout_solution = {
                 "origin": self._routes_from_assignment(
                     origin_assignment,
@@ -945,7 +1181,91 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                     destination_assignment,
                 )["destination"],
             }
-            return shared_order, list(shared_order)
+            return list(self.row_order_), list(self.column_order_)
+        if self._same_entity_set:
+            try:
+                ids = list(self.row_order_)
+                candidate_orders = self._solve_compatible_orders(
+                    ids,
+                    [origin_group, destination_group],
+                )
+                best_layout = None
+                best_gap = -np.inf
+                for shared_order in candidate_orders:
+                    try:
+                        origin_assignment = self._solve_port_site_assignment(
+                            ids,
+                            [origin_group],
+                            fixed_order=shared_order,
+                            allow_crossings=False,
+                        )
+                        destination_assignment = (
+                            self._solve_port_site_assignment(
+                                ids,
+                                [destination_group],
+                                fixed_order=shared_order,
+                                allow_crossings=False,
+                            )
+                        )
+                    except RuntimeError:
+                        continue
+                    achieved_gap = min(
+                        self._assignment_minimum_clearance(
+                            origin_assignment,
+                        ),
+                        self._assignment_minimum_clearance(
+                            destination_assignment,
+                        ),
+                    )
+                    if achieved_gap > best_gap:
+                        best_gap = achieved_gap
+                        best_layout = (
+                            list(shared_order),
+                            origin_assignment,
+                            destination_assignment,
+                        )
+                    if achieved_gap >= self.min_leader_gap - 1e-6:
+                        break
+                if best_layout is None:
+                    raise RuntimeError(
+                        "No globally crossing-free shared order was found "
+                        "for both map corridors."
+                    )
+                (
+                    shared_order,
+                    origin_assignment,
+                    destination_assignment,
+                ) = best_layout
+                self._fixed_layout_solution = {
+                    "origin": self._routes_from_assignment(
+                        origin_assignment,
+                    )["origin"],
+                    "destination": self._routes_from_assignment(
+                        destination_assignment,
+                    )["destination"],
+                }
+                return shared_order, list(shared_order)
+            except RuntimeError as exc:
+                if self.allow_leader_crossings:
+                    joint_assignment = (
+                        self._solve_joint_crossing_assignment(
+                            ids,
+                            [origin_group, destination_group],
+                        )
+                    )
+                    shared_order = self._order_from_assignment(
+                        ids, joint_assignment,
+                    )
+                    self._fixed_layout_solution = (
+                        self._routes_from_assignment(joint_assignment)
+                    )
+                    return shared_order, list(shared_order)
+                warnings.warn(
+                    "Shared corridor order is infeasible "
+                    f"({exc}); falling back to independent "
+                    "origin/destination ordering.",
+                    stacklevel=2,
+                )
 
         origin_assignment = self._solve_port_site_assignment(
             list(self.row_order_),
@@ -1099,7 +1419,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         return {"kind": kind, "ports": ports, "options": options}
 
     @staticmethod
-    def _solve_compatible_orders(ids, groups, max_orders=30):
+    def _solve_compatible_orders(
+        ids, groups, max_orders=30,
+    ):
         """Find shared orders with pairwise-compatible site choices."""
         assignments = []
         costs = []
@@ -1227,10 +1549,258 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             )
         return orders
 
+    def _solve_joint_crossing_assignment(self, ids, groups):
+        """Optimise a shared order without multiplying corridor sites.
+
+        One binary variable chooses each zone/slot pair and separate binary
+        variables choose the route site in every corridor.  This keeps the
+        two maps coupled through the shared matrix order while avoiding the
+        Cartesian product of their site candidates.
+        """
+        count = len(ids)
+        zone_indices = {zone_id: index for index, zone_id in enumerate(ids)}
+        order_assignments = []
+        for zone_id in ids:
+            for slot in range(count):
+                if all(
+                    slot in group["options"][zone_id]
+                    for group in groups
+                ):
+                    order_assignments.append((zone_id, slot))
+        if not order_assignments:
+            raise RuntimeError("No shared fixed-slope port order is feasible.")
+
+        order_lookup = {
+            assignment: index
+            for index, assignment in enumerate(order_assignments)
+        }
+        route_variables = []
+        routes_by_assignment = {}
+        for group_index, group in enumerate(groups):
+            for zone_id, slot in order_assignments:
+                indices = []
+                for route in group["options"][zone_id][slot]:
+                    indices.append(
+                        len(order_assignments) + len(route_variables)
+                    )
+                    route_variables.append(
+                        {
+                            "group": group_index,
+                            "zone_id": zone_id,
+                            "slot": slot,
+                            "route": route,
+                        }
+                    )
+                routes_by_assignment[(group_index, zone_id, slot)] = indices
+
+        base_variable_count = len(order_assignments) + len(route_variables)
+        equality_count = count * 2 + len(groups) * len(order_assignments)
+        base = lil_matrix(
+            (equality_count, base_variable_count), dtype=float,
+        )
+        for variable_index, (zone_id, slot) in enumerate(order_assignments):
+            base[zone_indices[zone_id], variable_index] = 1.0
+            base[count + slot, variable_index] = 1.0
+        link_row = count * 2
+        for group_index in range(len(groups)):
+            for zone_id, slot in order_assignments:
+                order_variable = order_lookup[(zone_id, slot)]
+                base[link_row, order_variable] = -1.0
+                for route_variable in routes_by_assignment[
+                    (group_index, zone_id, slot)
+                ]:
+                    base[link_row, route_variable] = 1.0
+                link_row += 1
+
+        crossing_pairs = []
+        clearances = {}
+        for group_index in range(len(groups)):
+            group_variables = [
+                len(order_assignments) + index
+                for index, item in enumerate(route_variables)
+                if item["group"] == group_index
+            ]
+            for position, first_index in enumerate(group_variables):
+                first = route_variables[
+                    first_index - len(order_assignments)
+                ]
+                first_route = first["route"]
+                for second_index in group_variables[position + 1:]:
+                    second = route_variables[
+                        second_index - len(order_assignments)
+                    ]
+                    if (
+                        first["zone_id"] == second["zone_id"]
+                        or first["slot"] == second["slot"]
+                    ):
+                        continue
+                    second_route = second["route"]
+                    pair = (first_index, second_index)
+                    if first_route["line"].intersects(second_route["line"]):
+                        crossing_pairs.append(pair)
+                    if first_route["band"] == second_route["band"]:
+                        center_distance = abs(
+                            first_route["diagonal_intercept"]
+                            - second_route["diagonal_intercept"]
+                        ) / np.sqrt(self.leader_slope ** 2 + 1.0)
+                        clearances[pair] = center_distance - 0.5 * (
+                            first_route["linewidth_px"]
+                            + second_route["linewidth_px"]
+                        )
+
+        crossing_variable_offset = base_variable_count
+        crossing_variable_count = len(crossing_pairs)
+        route_costs = np.asarray(
+            [item["route"]["score"] for item in route_variables],
+            dtype=float,
+        )
+        route_costs /= max(float(route_costs.max()), 1.0)
+        base_costs = np.zeros(base_variable_count, dtype=float)
+        base_costs[len(order_assignments):] = route_costs
+
+        def solve(conflicts, *, crossing_limit=None, objective="cost"):
+            limit_count = int(crossing_limit is not None)
+            constraint_count = (
+                equality_count + len(conflicts)
+                + crossing_variable_count + limit_count
+            )
+            variable_count = base_variable_count + crossing_variable_count
+            matrix = lil_matrix(
+                (constraint_count, variable_count), dtype=float,
+            )
+            matrix[:equality_count, :base_variable_count] = base
+            lower = np.full(constraint_count, -np.inf)
+            upper = np.full(constraint_count, np.inf)
+            lower[:equality_count] = np.concatenate(
+                [np.ones(count * 2), np.zeros(equality_count - count * 2)]
+            )
+            upper[:equality_count] = lower[:equality_count]
+
+            conflict_start = equality_count
+            for offset, (first, second) in enumerate(sorted(conflicts)):
+                row = conflict_start + offset
+                matrix[row, first] = 1.0
+                matrix[row, second] = 1.0
+                upper[row] = 1.0
+
+            crossing_start = conflict_start + len(conflicts)
+            for offset, (first, second) in enumerate(crossing_pairs):
+                row = crossing_start + offset
+                matrix[row, first] = 1.0
+                matrix[row, second] = 1.0
+                matrix[row, crossing_variable_offset + offset] = -1.0
+                upper[row] = 1.0
+
+            if crossing_limit is not None:
+                row = constraint_count - 1
+                for offset in range(crossing_variable_count):
+                    matrix[row, crossing_variable_offset + offset] = 1.0
+                upper[row] = float(crossing_limit)
+
+            objective_costs = np.zeros(variable_count, dtype=float)
+            if objective == "crossings":
+                objective_costs[crossing_variable_offset:] = 1.0
+            else:
+                objective_costs[:base_variable_count] = base_costs
+            result = milp(
+                c=objective_costs,
+                integrality=np.ones(variable_count),
+                bounds=Bounds(
+                    np.zeros(variable_count), np.ones(variable_count),
+                ),
+                constraints=LinearConstraint(
+                    matrix.tocsr(), lower, upper,
+                ),
+                options={"time_limit": 20.0},
+            )
+            if not result.success or result.x is None:
+                return None
+            return np.flatnonzero(
+                result.x[:base_variable_count] > 0.5
+            ).tolist()
+
+        chosen = solve(set(), objective="crossings")
+        if chosen is None:
+            raise RuntimeError(
+                "No optimal fixed-slope MapTrix layout was found."
+            )
+        selected = set(chosen)
+        crossing_limit = sum(
+            first in selected and second in selected
+            for first, second in crossing_pairs
+        )
+        chosen = solve(set(), crossing_limit=crossing_limit)
+        if chosen is None:
+            raise RuntimeError(
+                "No optimal fixed-slope MapTrix layout was found."
+            )
+
+        selected = set(chosen)
+        selected_route_indices = {
+            index for index in selected if index >= len(order_assignments)
+        }
+        selected_gaps = [
+            clearance
+            for (first, second), clearance in clearances.items()
+            if first in selected_route_indices and second in selected_route_indices
+        ]
+        current_gap = min(selected_gaps) if selected_gaps else np.inf
+        target_gap = max(float(self.min_leader_gap), 0.0)
+        if np.isfinite(current_gap) and current_gap < target_gap:
+            low = current_gap
+            high = target_gap
+            best = chosen
+            for _ in range(10):
+                threshold = (low + high) / 2.0
+                spacing_conflicts = {
+                    pair
+                    for pair, clearance in clearances.items()
+                    if clearance < threshold
+                }
+                candidate = solve(
+                    spacing_conflicts,
+                    crossing_limit=crossing_limit,
+                )
+                if candidate is None:
+                    high = threshold
+                else:
+                    low = threshold
+                    best = candidate
+            chosen = best
+
+        selected = set(chosen)
+        selected_order = {
+            zone_id: slot
+            for index, (zone_id, slot) in enumerate(order_assignments)
+            if index in selected
+        }
+        selected_routes = {}
+        for index in selected:
+            if index < len(order_assignments):
+                continue
+            item = route_variables[index - len(order_assignments)]
+            selected_routes[(item["group"], item["zone_id"])] = item["route"]
+        return {
+            zone_id: {
+                "slot": selected_order[zone_id],
+                "routes": tuple(
+                    selected_routes[(group_index, zone_id)]
+                    for group_index in range(len(groups))
+                ),
+                "score": sum(
+                    selected_routes[(group_index, zone_id)]["score"]
+                    for group_index in range(len(groups))
+                ),
+            }
+            for zone_id in ids
+        }
+
     def _solve_port_site_assignment(
-        self, ids, groups, fixed_order=None,
+        self, ids, groups, fixed_order=None, allow_crossings=None,
     ):
         """Solve shared port assignment and crossing-free site selection."""
+        if allow_crossings is None:
+            allow_crossings = self.allow_leader_crossings
         domains = {}
         for zone_id in ids:
             entries = []
@@ -1292,9 +1862,13 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         scale = max(float(costs.max()), 1.0)
         costs = costs / scale
 
-        if fixed_order is not None:
+        if fixed_order is not None or allow_crossings:
             return self._solve_spaced_fixed_assignment(
-                variables, base, costs, ids,
+                variables,
+                base,
+                costs,
+                ids,
+                allow_crossings=allow_crossings,
             )
 
         for _ in range(500):
@@ -1389,50 +1963,102 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         )
 
     def _solve_spaced_fixed_assignment(
-        self, variables, base, costs, ids,
+        self, variables, base, costs, ids, allow_crossings=None,
     ):
-        """Maximise the minimum same-band clearance without crossings."""
+        """Lexicographically optimise crossings, spacing, then route cost."""
+        if allow_crossings is None:
+            allow_crossings = self.allow_leader_crossings
         count = len(ids)
         hard_conflicts = set()
+        crossing_counts = {}
         clearances = {}
         for first_index, first in enumerate(variables):
             first_zone = first["routes"][0]["zone_id"]
             for second_index in range(first_index + 1, len(variables)):
                 second = variables[second_index]
-                if first_zone == second["routes"][0]["zone_id"]:
+                if (
+                    first_zone == second["routes"][0]["zone_id"]
+                    or first["slot"] == second["slot"]
+                ):
                     continue
                 pair = (first_index, second_index)
-                if any(
-                    first_route["line"].intersects(second_route["line"])
-                    for first_route, second_route in zip(
-                        first["routes"], second["routes"]
-                    )
-                ):
+                crossing_count = self._entry_crossing_count(first, second)
+                if crossing_count:
+                    crossing_counts[pair] = crossing_count
+                if not allow_crossings and crossing_count:
                     hard_conflicts.add(pair)
                 clearance = self._entry_diagonal_clearance(first, second)
                 if np.isfinite(clearance):
                     clearances[pair] = clearance
 
-        def solve(conflicts):
-            constraint_count = count * 2 + len(conflicts)
+        crossing_items = sorted(crossing_counts.items())
+        active_crossing_items = (
+            crossing_items if allow_crossings else []
+        )
+        crossing_variable_offset = len(variables)
+        crossing_variable_count = len(active_crossing_items)
+
+        def solve(
+            conflicts,
+            *,
+            crossing_limit=None,
+            objective="cost",
+        ):
+            linearization_count = crossing_variable_count
+            limit_count = int(crossing_limit is not None)
+            constraint_count = (
+                count * 2 + len(conflicts)
+                + linearization_count + limit_count
+            )
+            variable_count = len(variables) + crossing_variable_count
             matrix = lil_matrix(
-                (constraint_count, len(variables)), dtype=float,
+                (constraint_count, variable_count), dtype=float,
             )
-            matrix[: count * 2] = base
-            lower = np.concatenate(
-                [np.ones(count * 2), np.full(len(conflicts), -np.inf)]
-            )
+            matrix[: count * 2, : len(variables)] = base
+            lower = np.full(constraint_count, -np.inf)
             upper = np.ones(constraint_count)
+            lower[: count * 2] = 1.0
             for row, (first, second) in enumerate(
                 sorted(conflicts), start=count * 2,
             ):
                 matrix[row, first] = 1.0
                 matrix[row, second] = 1.0
+
+            linearization_start = count * 2 + len(conflicts)
+            for offset, ((first, second), _) in enumerate(
+                active_crossing_items
+            ):
+                row = linearization_start + offset
+                crossing_variable = crossing_variable_offset + offset
+                matrix[row, first] = 1.0
+                matrix[row, second] = 1.0
+                matrix[row, crossing_variable] = -1.0
+
+            if crossing_limit is not None:
+                row = constraint_count - 1
+                for offset, (_, crossing_count) in enumerate(
+                    active_crossing_items
+                ):
+                    matrix[
+                        row, crossing_variable_offset + offset
+                    ] = crossing_count
+                upper[row] = float(crossing_limit)
+
+            objective_costs = np.zeros(variable_count, dtype=float)
+            if objective == "crossings":
+                for offset, (_, crossing_count) in enumerate(
+                    active_crossing_items
+                ):
+                    objective_costs[
+                        crossing_variable_offset + offset
+                    ] = crossing_count
+            else:
+                objective_costs[: len(variables)] = costs
             result = milp(
-                c=costs,
-                integrality=np.ones(len(variables)),
+                c=objective_costs,
+                integrality=np.ones(variable_count),
                 bounds=Bounds(
-                    np.zeros(len(variables)), np.ones(len(variables)),
+                    np.zeros(variable_count), np.ones(variable_count),
                 ),
                 constraints=LinearConstraint(
                     matrix.tocsr(), lower, upper,
@@ -1441,9 +2067,26 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             )
             if not result.success or result.x is None:
                 return None
-            return np.flatnonzero(result.x > 0.5).tolist()
+            return np.flatnonzero(
+                result.x[: len(variables)] > 0.5
+            ).tolist()
 
-        chosen = solve(hard_conflicts)
+        crossing_limit = None
+        if allow_crossings:
+            minimum_crossing_solution = solve(
+                set(), objective="crossings",
+            )
+            if minimum_crossing_solution is None:
+                raise RuntimeError(
+                    "No fixed-slope MapTrix layout was found."
+                )
+            crossing_limit = self._selected_crossing_count(
+                minimum_crossing_solution,
+                variables,
+            )
+            chosen = solve(set(), crossing_limit=crossing_limit)
+        else:
+            chosen = solve(hard_conflicts)
         if chosen is None:
             raise RuntimeError(
                 "No crossing-free fixed-slope MapTrix layout was found."
@@ -1466,7 +2109,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 for pair, clearance in clearances.items()
                 if clearance < threshold
             }
-            candidate = solve(hard_conflicts | spacing_conflicts)
+            candidate = solve(
+                hard_conflicts | spacing_conflicts,
+                crossing_limit=crossing_limit,
+            )
             if candidate is None:
                 high = threshold
             else:
@@ -1474,6 +2120,26 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 best = candidate
 
         return self._assignment_from_indices(best, variables)
+
+    @staticmethod
+    def _entry_crossing_count(first, second):
+        """Count pairwise route intersections across matching corridors."""
+        return sum(
+            first_route["line"].intersects(second_route["line"])
+            for first_route, second_route in zip(
+                first["routes"], second["routes"]
+            )
+        )
+
+    def _selected_crossing_count(self, chosen, variables):
+        """Count crossings in one selected assignment."""
+        return sum(
+            self._entry_crossing_count(
+                variables[first_index], variables[second_index],
+            )
+            for position, first_index in enumerate(chosen)
+            for second_index in chosen[position + 1:]
+        )
 
     def _entry_diagonal_clearance(self, first, second):
         """Return the minimum visible gap between parallel diagonals."""
@@ -1768,7 +2434,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         }
 
     def _draw_matrix_ports(self, ax):
-        if not self._leader_geometry:
+        if not self.show_matrix_ports or not self._leader_geometry:
             return
         for kind, color in [
             ("origin", self.origin_line_color),
@@ -1814,6 +2480,16 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         }
 
     @staticmethod
+    def _figure_rect_to_screen(fig, rect):
+        left, bottom, width, height = rect
+        return {
+            "x": float(left * fig.bbox.width),
+            "y": float((1.0 - bottom - height) * fig.bbox.height),
+            "w": float(width * fig.bbox.width),
+            "h": float(height * fig.bbox.height),
+        }
+
+    @staticmethod
     def _exported_minimum_diagonal_gap(fig, leaders):
         gaps = []
         for index, first in enumerate(leaders):
@@ -1841,6 +2517,21 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 )
                 gaps.append(center_distance - stroke_radius)
         return float(min(gaps)) if gaps else None
+
+    @staticmethod
+    def _exported_leader_crossings(leaders):
+        """Count intersections between exported leader paths."""
+        lines = [
+            LineString(
+                [(point["x"], point["y"]) for point in leader["path"]]
+            )
+            for leader in leaders
+        ]
+        return sum(
+            first.intersects(second)
+            for index, first in enumerate(lines)
+            for second in lines[index + 1:]
+        )
 
     def _export_layout(self, fig, ax_origin, ax_destination, ax_matrix):
         rows, cols = self.matrix_.shape
@@ -1876,6 +2567,10 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         column_ports = {
             leader["id"]: leader["port"] for leader in destination_leaders
         }
+        origin_crossings = self._exported_leader_crossings(origin_leaders)
+        destination_crossings = self._exported_leader_crossings(
+            destination_leaders,
+        )
         origin_rect = self._axes_rect_to_screen(fig, ax_origin)
         destination_rect = self._axes_rect_to_screen(
             fig, ax_destination,
@@ -1884,6 +2579,18 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         colorbar_axes_rect = self._axes_rect_to_screen(
             fig, self.axes_["colorbar"],
         )
+        frame_rects = self._component_frame_rects(
+            fig,
+            ax_origin,
+            ax_destination,
+            ax_matrix,
+            self.axes_["colorbar"],
+        )
+        component_frames = {
+            name: self._figure_rect_to_screen(fig, rect)
+            for name, rect in frame_rects.items()
+        }
+        matrix_frame_rect = component_frames["matrix"]
         map_right = max(
             origin_rect["x"] + origin_rect["w"],
             destination_rect["x"] + destination_rect["w"],
@@ -1913,9 +2620,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 "matrix": matrix_axes_rect,
                 "colorbar": colorbar_axes_rect,
             },
-            "configured_rects": {
-                **self._configured_rects,
-            },
+            "component_frames": component_frames,
             "resolved_rects": {
                 "origin_map": self.origin_map_rect,
                 "destination_map": self.destination_map_rect,
@@ -1923,18 +2628,18 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 "colorbar": self.colorbar_rect,
             },
             "layout_rect": self.layout_rect,
+            "layout_mode": "semantic",
+            "layout_parameters": {
+                "map_vertical_gap": self.map_vertical_gap,
+                "map_matrix_gap": self.map_matrix_gap,
+                "matrix_colorbar_gap": self.matrix_colorbar_gap,
+                "colorbar_height_ratio": self.colorbar_height_ratio,
+                "matrix_scale": self.matrix_scale,
+                "show_layout_frames": self.show_layout_frames,
+            },
             "layout_gaps": {
-                "configured_map_to_matrix": float(
-                    self._configured_rects["matrix"][0]
-                    - max(
-                        self._configured_rects["origin_map"][0]
-                        + self._configured_rects["origin_map"][2],
-                        self._configured_rects["destination_map"][0]
-                        + self._configured_rects["destination_map"][2],
-                    )
-                ),
                 "resolved_map_to_matrix": float(
-                    self.matrix_rect[0]
+                    frame_rects["matrix"][0]
                     - max(
                         self.origin_map_rect[0]
                         + self.origin_map_rect[2],
@@ -1942,13 +2647,25 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                         + self.destination_map_rect[2],
                     )
                 ),
+                "map_vertical": float(
+                    destination_rect["y"]
+                    - origin_rect["y"]
+                    - origin_rect["h"]
+                ),
                 "map_to_matrix": float(
-                    matrix_axes_rect["x"] - map_right
+                    matrix_frame_rect["x"] - map_right
                 ),
                 "matrix_to_colorbar": float(
                     colorbar_axes_rect["x"]
-                    - matrix_axes_rect["x"]
-                    - matrix_axes_rect["w"]
+                    - matrix_frame_rect["x"]
+                    - matrix_frame_rect["w"]
+                ),
+                "matrix_top_to_origin_top": float(
+                    matrix_frame_rect["y"] - origin_rect["y"]
+                ),
+                "matrix_bottom_to_destination_bottom": float(
+                    destination_rect["y"] + destination_rect["h"]
+                    - matrix_frame_rect["y"] - matrix_frame_rect["h"]
                 ),
             },
             "matrix": {
@@ -1965,8 +2682,15 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 },
             },
             "same_entity_set": self._same_entity_set,
+            "allow_leader_crossings": self.allow_leader_crossings,
+            "allow_reorder": self.allow_reorder,
             "leader_routing": self.leader_routing,
             "leader_angle": self.leader_angle,
+            "leader_crossings": {
+                "origin": origin_crossings,
+                "destination": destination_crossings,
+                "total": origin_crossings + destination_crossings,
+            },
             "minimum_diagonal_gap": {
                 "origin": self._exported_minimum_diagonal_gap(
                     fig, origin_leaders,
