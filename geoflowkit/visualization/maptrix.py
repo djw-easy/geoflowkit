@@ -8,6 +8,7 @@ affect the visual encoding; ordering and routing depend on geography.
 
 from __future__ import annotations
 
+import time
 import warnings
 from collections.abc import Callable
 
@@ -16,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
-from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.optimize import Bounds, LinearConstraint, linear_sum_assignment, milp
 from scipy.sparse import lil_matrix
 from shapely.geometry import LineString, Point
 
@@ -148,6 +149,16 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         capped max-min objective: crossings remain forbidden even when
         this gap cannot be reached.  For legacy routing it controls the
         vertical separation between adjacent map sites.
+    site_grid_size : int, default=7
+        Interior sampling density used to find map attachment sites.
+    routing_solver : {'auto', 'exact', 'heuristic'}, default='auto'
+        Fixed-angle ordering solver. ``'auto'`` keeps the exact MILP for
+        small layouts and switches to deterministic local search for
+        larger layouts.
+    exact_routing_zone_limit : int, default=12
+        Largest row or column count solved exactly in ``'auto'`` mode.
+    routing_max_iterations : int, default=30
+        Maximum improving-swap passes used by the heuristic solver.
     map_title_pad : float, default=0
         Distance, in points, between each map's left border and its
         vertical ``out_title`` or ``in_title`` axis label.
@@ -228,6 +239,9 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         corridor_gap: float = 0.018,
         min_leader_gap: float = 12.0,
         site_grid_size: int = 7,
+        routing_solver: str = "auto",
+        exact_routing_zone_limit: int = 12,
+        routing_max_iterations: int = 30,
         map_facecolor="#F2F4F5",
         map_edgecolor="#8B949E",
         cbar_kwds: dict | None = None,
@@ -394,6 +408,28 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         if self.min_leader_gap < 0:
             raise ValueError("min_leader_gap must be non-negative")
         self.site_grid_size = max(int(site_grid_size), 3)
+        valid_solvers = {"auto", "exact", "heuristic"}
+        if routing_solver not in valid_solvers:
+            raise ValueError(
+                f"routing_solver must be one of {sorted(valid_solvers)}"
+            )
+        self.routing_solver = routing_solver
+        if (
+            not isinstance(exact_routing_zone_limit, (int, np.integer))
+            or exact_routing_zone_limit < 2
+        ):
+            raise ValueError(
+                "exact_routing_zone_limit must be an integer of at least 2"
+            )
+        self.exact_routing_zone_limit = int(exact_routing_zone_limit)
+        if (
+            not isinstance(routing_max_iterations, (int, np.integer))
+            or routing_max_iterations < 1
+        ):
+            raise ValueError(
+                "routing_max_iterations must be a positive integer"
+            )
+        self.routing_max_iterations = int(routing_max_iterations)
         self.map_facecolor = map_facecolor
         self.map_edgecolor = map_edgecolor
         self.cbar_kwds = {} if cbar_kwds is None else dict(cbar_kwds)
@@ -416,6 +452,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         self.layout_ = None
         self._leader_geometry = None
         self._fixed_layout_solution = None
+        self._routing_diagnostics = None
+        self._routing_started_at = None
         self._logical_layout = None
         self.o_sites_ = None
         self.d_sites_ = None
@@ -809,6 +847,8 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         # The active matrix axes rectangle is only known after equal-aspect
         # adjustment, so leader geometry is resolved after a canvas draw.
         fig.canvas.draw()
+        self._routing_diagnostics = None
+        self._routing_started_at = None
         if self.leader_routing == "diagonal-horizontal":
             row_order, column_order = self._solve_boundary_orders(
                 fig, ax_origin, ax_destination, ax_matrix,
@@ -1134,6 +1174,21 @@ class MapTrixVisualizer(ODMatrixVisualizer):
     ):
         """Jointly assign ports and in-zone sites for fixed-angle leaders."""
         rows, cols = self.matrix_.shape
+        resolved_solver = self.routing_solver
+        if resolved_solver == "auto":
+            resolved_solver = (
+                "exact"
+                if max(rows, cols) <= self.exact_routing_zone_limit
+                else "heuristic"
+            )
+        self._routing_started_at = time.perf_counter()
+        self._routing_diagnostics = {
+            "requested_solver": self.routing_solver,
+            "solver": resolved_solver,
+            "optimal": resolved_solver == "exact",
+            "iterations": 0,
+            "candidate_routes": 0,
+        }
         origin_ports = self._matrix_port_points(
             fig, ax_matrix, "left", rows,
         )
@@ -1150,6 +1205,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             origin_ports,
             "origin",
             self._outflows,
+            site_grid_size=(0 if resolved_solver == "heuristic" else None),
         )
         destination_group = self._build_route_options(
             fig,
@@ -1161,7 +1217,71 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             destination_ports,
             "destination",
             self._inflows,
+            site_grid_size=(0 if resolved_solver == "heuristic" else None),
         )
+        self._routing_diagnostics["candidate_routes"] = sum(
+            len(routes)
+            for group in (origin_group, destination_group)
+            for slots in group["options"].values()
+            for routes in slots.values()
+        )
+        if resolved_solver == "heuristic":
+            try:
+                return self._solve_heuristic_boundary_orders(
+                    fig,
+                    ax_origin,
+                    ax_destination,
+                    origin_ports,
+                    destination_ports,
+                    origin_group,
+                    destination_group,
+                )
+            except RuntimeError as exc:
+                if "No feasible fixed-slope port assignment" not in str(exc):
+                    raise
+                fallback_grid_size = min(self.site_grid_size, 3)
+                origin_group = self._build_route_options(
+                    fig,
+                    ax_origin,
+                    list(self.row_order_),
+                    self.o_centroids_,
+                    self.origin_zones,
+                    self.zone_id_col,
+                    origin_ports,
+                    "origin",
+                    self._outflows,
+                    site_grid_size=fallback_grid_size,
+                )
+                destination_group = self._build_route_options(
+                    fig,
+                    ax_destination,
+                    list(self.column_order_),
+                    self.d_centroids_,
+                    self.dest_zones,
+                    self.dest_zone_id_col,
+                    destination_ports,
+                    "destination",
+                    self._inflows,
+                    site_grid_size=fallback_grid_size,
+                )
+                self._routing_diagnostics["fallback_grid_size"] = (
+                    fallback_grid_size
+                )
+                self._routing_diagnostics["candidate_routes"] += sum(
+                    len(routes)
+                    for group in (origin_group, destination_group)
+                    for slots in group["options"].values()
+                    for routes in slots.values()
+                )
+                return self._solve_heuristic_boundary_orders(
+                    fig,
+                    ax_origin,
+                    ax_destination,
+                    origin_ports,
+                    destination_ports,
+                    origin_group,
+                    destination_group,
+                )
         if not self.allow_reorder:
             origin_assignment = self._solve_port_site_assignment(
                 list(self.row_order_),
@@ -1339,8 +1459,13 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         ports,
         kind,
         flow_totals,
+        *,
+        site_grid_size=None,
+        slots_by_zone=None,
     ):
         """Create fixed-slope candidates for every zone/port pairing."""
+        if site_grid_size is None:
+            site_grid_size = self.site_grid_size
         prepared = _prepare_zones(zones, zone_id_col=zone_id_col)
         geometries = dict(zip(prepared["zone_id"], prepared.geometry))
         width_map = self._leader_width_map(ids, flow_totals)
@@ -1352,11 +1477,11 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             initial_display = ax.transData.transform(initial)
             minx, miny, maxx, maxy = geometry.bounds
             x_values = np.linspace(
-                minx, maxx, self.site_grid_size + 2,
-            )[1:-1]
+                minx, maxx, site_grid_size + 2,
+            )[1:-1] if site_grid_size else []
             y_values = np.linspace(
-                miny, maxy, self.site_grid_size + 2,
-            )[1:-1]
+                miny, maxy, site_grid_size + 2,
+            )[1:-1] if site_grid_size else []
             site_candidates = [tuple(initial)]
             site_candidates.extend(
                 (float(x), float(y))
@@ -1366,7 +1491,15 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             )
 
             by_slot = {}
-            for slot, port_figure in enumerate(ports):
+            active_slots = (
+                range(len(ports))
+                if slots_by_zone is None
+                else slots_by_zone[zone_id]
+            )
+            if isinstance(active_slots, (int, np.integer)):
+                active_slots = [int(active_slots)]
+            for slot in active_slots:
+                port_figure = ports[slot]
                 port_display = fig.transFigure.transform(port_figure)
                 candidates = []
                 seen = set()
@@ -1417,6 +1550,488 @@ class MapTrixVisualizer(ODMatrixVisualizer):
             options[zone_id] = by_slot
 
         return {"kind": kind, "ports": ports, "options": options}
+
+    def _solve_heuristic_boundary_orders(
+        self,
+        fig,
+        ax_origin,
+        ax_destination,
+        origin_ports,
+        destination_ports,
+        origin_group,
+        destination_group,
+    ):
+        """Resolve a large fixed-angle layout without a quadratic MILP."""
+        iterations = 0
+        if not self.allow_reorder:
+            row_order = list(self.row_order_)
+            column_order = list(self.column_order_)
+        elif self._same_entity_set:
+            row_order, order_iterations = self._heuristic_port_order(
+                list(self.row_order_),
+                [origin_group, destination_group],
+            )
+            column_order = list(row_order)
+            iterations += order_iterations
+        else:
+            row_order, origin_iterations = self._heuristic_port_order(
+                list(self.row_order_), [origin_group],
+            )
+            column_order, destination_iterations = (
+                self._heuristic_port_order(
+                    list(self.column_order_), [destination_group],
+                )
+            )
+            iterations += origin_iterations + destination_iterations
+
+        origin_group = self._build_route_options(
+            fig,
+            ax_origin,
+            list(self.row_order_),
+            self.o_centroids_,
+            self.origin_zones,
+            self.zone_id_col,
+            origin_ports,
+            "origin",
+            self._outflows,
+            slots_by_zone={
+                zone_id: range(
+                    max(0, slot - 2),
+                    min(len(row_order), slot + 3),
+                )
+                for slot, zone_id in enumerate(row_order)
+            },
+        )
+        destination_group = self._build_route_options(
+            fig,
+            ax_destination,
+            list(self.column_order_),
+            self.d_centroids_,
+            self.dest_zones,
+            self.dest_zone_id_col,
+            destination_ports,
+            "destination",
+            self._inflows,
+            slots_by_zone={
+                zone_id: range(
+                    max(0, slot - 2),
+                    min(len(column_order), slot + 3),
+                )
+                for slot, zone_id in enumerate(column_order)
+            },
+        )
+        self._routing_diagnostics["candidate_routes"] += sum(
+            len(routes)
+            for group in (origin_group, destination_group)
+            for slots in group["options"].values()
+            for routes in slots.values()
+        )
+        if self.allow_reorder and self._same_entity_set:
+            row_order, refined_iterations = self._heuristic_port_order(
+                list(self.row_order_),
+                [origin_group, destination_group],
+            )
+            column_order = list(row_order)
+            iterations += refined_iterations
+        elif self.allow_reorder:
+            row_order, refined_origin_iterations = (
+                self._heuristic_port_order(
+                    list(self.row_order_), [origin_group],
+                )
+            )
+            column_order, refined_destination_iterations = (
+                self._heuristic_port_order(
+                    list(self.column_order_), [destination_group],
+                )
+            )
+            iterations += (
+                refined_origin_iterations
+                + refined_destination_iterations
+            )
+
+        origin_assignment, origin_site_iterations = (
+            self._heuristic_route_assignment(row_order, origin_group)
+        )
+        destination_assignment, destination_site_iterations = (
+            self._heuristic_route_assignment(
+                column_order, destination_group,
+            )
+        )
+        iterations += origin_site_iterations + destination_site_iterations
+
+        origin_crossings = self._assignment_crossing_count(
+            origin_assignment,
+        )
+        destination_crossings = self._assignment_crossing_count(
+            destination_assignment,
+        )
+        total_crossings = origin_crossings + destination_crossings
+        if not self.allow_leader_crossings and total_crossings:
+            raise RuntimeError(
+                "The heuristic did not find a crossing-free fixed-slope "
+                "MapTrix layout. Use routing_solver='exact', enable "
+                "allow_leader_crossings, or adjust the layout."
+            )
+
+        self._fixed_layout_solution = {
+            "origin": self._routes_from_assignment(
+                origin_assignment,
+            )["origin"],
+            "destination": self._routes_from_assignment(
+                destination_assignment,
+            )["destination"],
+        }
+        self._routing_diagnostics.update({
+            "iterations": iterations,
+            "optimal": total_crossings == 0,
+            "search_crossings": {
+                "origin": origin_crossings,
+                "destination": destination_crossings,
+                "total": total_crossings,
+            },
+        })
+        return row_order, column_order
+
+    def _heuristic_port_order(self, ids, groups):
+        """Build and locally improve a feasible one-to-one port order."""
+        count = len(ids)
+        costs = np.full((count, count), np.inf, dtype=float)
+        for zone_index, zone_id in enumerate(ids):
+            for slot in range(count):
+                if not all(
+                    slot in group["options"][zone_id]
+                    for group in groups
+                ):
+                    continue
+                costs[zone_index, slot] = sum(
+                    group["options"][zone_id][slot][0]["score"]
+                    for group in groups
+                )
+        try:
+            zone_indices, slots = linear_sum_assignment(costs)
+        except ValueError as exc:
+            raise RuntimeError(
+                "No feasible fixed-slope port assignment was found."
+            ) from exc
+        if (
+            len(zone_indices) != count
+            or not np.all(np.isfinite(costs[zone_indices, slots]))
+        ):
+            raise RuntimeError(
+                "No feasible fixed-slope port assignment was found."
+            )
+
+        order = [None] * count
+        for zone_index, slot in zip(zone_indices, slots):
+            order[int(slot)] = ids[int(zone_index)]
+
+        pair_cache = {}
+        best_score = self._heuristic_order_objective(
+            order, groups, pair_cache,
+        )
+        iterations = 0
+        if count <= 12:
+            swap_distances = range(1, count)
+        else:
+            swap_distances = sorted({
+                distance
+                for distance in (1, 2, 4, 8, 16, count // 2)
+                if distance < count
+            })
+        for _ in range(self.routing_max_iterations):
+            candidate_order = None
+            candidate_score = best_score
+            for distance in swap_distances:
+                for first in range(count - distance):
+                    second = first + distance
+                    trial = list(order)
+                    trial[first], trial[second] = (
+                        trial[second], trial[first]
+                    )
+                    score = self._heuristic_swap_objective(
+                        order,
+                        groups,
+                        best_score,
+                        first,
+                        second,
+                        pair_cache,
+                    )
+                    if score < candidate_score:
+                        candidate_order = trial
+                        candidate_score = score
+            if candidate_order is None:
+                break
+            order = candidate_order
+            best_score = candidate_score
+            iterations += 1
+            if best_score[0] == 0 and best_score[1] <= 1e-9:
+                break
+        return order, iterations
+
+    def _heuristic_swap_objective(
+        self,
+        order,
+        groups,
+        current_score,
+        first_position,
+        second_position,
+        pair_cache,
+    ):
+        """Update an order objective using only swap-affected pairs."""
+        first_zone = order[first_position]
+        second_zone = order[second_position]
+        crossings, gap_deficit, route_cost = current_score
+        for group_index, group in enumerate(groups):
+            first_old = group["options"][first_zone].get(first_position)
+            second_old = group["options"][second_zone].get(second_position)
+            first_new = group["options"][first_zone].get(second_position)
+            second_new = group["options"][second_zone].get(first_position)
+            if not first_new or not second_new:
+                return (np.inf, np.inf, np.inf)
+            route_cost += (
+                first_new[0]["score"]
+                + second_new[0]["score"]
+                - first_old[0]["score"]
+                - second_old[0]["score"]
+            )
+            affected = [
+                position
+                for position in range(len(order))
+                if position not in {first_position, second_position}
+            ]
+            for other_position in affected:
+                other_zone = order[other_position]
+                old_first = self._heuristic_cached_pair_metrics(
+                    group_index,
+                    group,
+                    first_zone,
+                    first_position,
+                    other_zone,
+                    other_position,
+                    pair_cache,
+                )
+                new_first = self._heuristic_cached_pair_metrics(
+                    group_index,
+                    group,
+                    first_zone,
+                    second_position,
+                    other_zone,
+                    other_position,
+                    pair_cache,
+                )
+                old_second = self._heuristic_cached_pair_metrics(
+                    group_index,
+                    group,
+                    second_zone,
+                    second_position,
+                    other_zone,
+                    other_position,
+                    pair_cache,
+                )
+                new_second = self._heuristic_cached_pair_metrics(
+                    group_index,
+                    group,
+                    second_zone,
+                    first_position,
+                    other_zone,
+                    other_position,
+                    pair_cache,
+                )
+                crossings += (
+                    new_first[0] + new_second[0]
+                    - old_first[0] - old_second[0]
+                )
+                gap_deficit += (
+                    self._clearance_deficit(new_first[1])
+                    + self._clearance_deficit(new_second[1])
+                    - self._clearance_deficit(old_first[1])
+                    - self._clearance_deficit(old_second[1])
+                )
+            old_pair = self._heuristic_cached_pair_metrics(
+                group_index,
+                group,
+                first_zone,
+                first_position,
+                second_zone,
+                second_position,
+                pair_cache,
+            )
+            new_pair = self._heuristic_cached_pair_metrics(
+                group_index,
+                group,
+                first_zone,
+                second_position,
+                second_zone,
+                first_position,
+                pair_cache,
+            )
+            crossings += new_pair[0] - old_pair[0]
+            gap_deficit += (
+                self._clearance_deficit(new_pair[1])
+                - self._clearance_deficit(old_pair[1])
+            )
+        return int(crossings), float(gap_deficit), float(route_cost)
+
+    def _heuristic_cached_pair_metrics(
+        self,
+        group_index,
+        group,
+        first_zone,
+        first_slot,
+        second_zone,
+        second_slot,
+        pair_cache,
+    ):
+        key = (
+            group_index,
+            first_zone,
+            first_slot,
+            second_zone,
+            second_slot,
+        )
+        metrics = pair_cache.get(key)
+        if metrics is None:
+            first = group["options"][first_zone].get(first_slot)
+            second = group["options"][second_zone].get(second_slot)
+            if not first or not second:
+                return (np.inf, -np.inf)
+            metrics = self._heuristic_route_pair_metrics(
+                first[0], second[0],
+            )
+            pair_cache[key] = metrics
+        return metrics
+
+    def _clearance_deficit(self, clearance):
+        if not np.isfinite(clearance):
+            return 0.0
+        return max(self.min_leader_gap - clearance, 0.0)
+
+    def _heuristic_order_objective(self, order, groups, pair_cache):
+        """Score an order using each zone/slot pair's cheapest route."""
+        selected = []
+        route_cost = 0.0
+        for group_index, group in enumerate(groups):
+            group_routes = []
+            for slot, zone_id in enumerate(order):
+                candidates = group["options"][zone_id].get(slot)
+                if not candidates:
+                    return (np.inf, np.inf, np.inf)
+                route = candidates[0]
+                group_routes.append((zone_id, slot, route))
+                route_cost += route["score"]
+            selected.append((group_index, group_routes))
+
+        crossings = 0
+        gap_deficit = 0.0
+        for group_index, group_routes in selected:
+            for position, (first_zone, first_slot, first_route) in enumerate(
+                group_routes
+            ):
+                for second_zone, second_slot, second_route in group_routes[
+                    position + 1:
+                ]:
+                    key = (
+                        group_index,
+                        first_zone,
+                        first_slot,
+                        second_zone,
+                        second_slot,
+                    )
+                    metrics = pair_cache.get(key)
+                    if metrics is None:
+                        metrics = self._heuristic_route_pair_metrics(
+                            first_route, second_route,
+                        )
+                        pair_cache[key] = metrics
+                    pair_crossings, clearance = metrics
+                    crossings += pair_crossings
+                    gap_deficit += self._clearance_deficit(clearance)
+        return crossings, gap_deficit, route_cost
+
+    def _heuristic_route_assignment(self, order, group):
+        """Choose map sites for a fixed order by coordinate descent."""
+        selected = {}
+        for slot, zone_id in enumerate(order):
+            candidates = group["options"][zone_id].get(slot)
+            if not candidates:
+                raise RuntimeError(
+                    f"No feasible fixed-slope route for zone {zone_id!r} "
+                    f"at slot {slot}."
+                )
+            selected[zone_id] = candidates[0]
+
+        iterations = 0
+        max_passes = min(self.routing_max_iterations, 8)
+        for _ in range(max_passes):
+            changed = False
+            for slot, zone_id in enumerate(order):
+                candidates = group["options"][zone_id][slot]
+                best_route = selected[zone_id]
+                best_score = self._heuristic_site_objective(
+                    zone_id, best_route, selected,
+                )
+                for candidate in candidates[1:]:
+                    score = self._heuristic_site_objective(
+                        zone_id, candidate, selected,
+                    )
+                    if score < best_score:
+                        best_route = candidate
+                        best_score = score
+                if best_route is not selected[zone_id]:
+                    selected[zone_id] = best_route
+                    changed = True
+            if not changed:
+                break
+            iterations += 1
+
+        assignment = {
+            zone_id: {
+                "slot": slot,
+                "routes": (selected[zone_id],),
+                "score": selected[zone_id]["score"],
+            }
+            for slot, zone_id in enumerate(order)
+        }
+        return assignment, iterations
+
+    def _heuristic_site_objective(
+        self, zone_id, candidate, selected,
+    ):
+        crossings = 0
+        gap_deficit = 0.0
+        for other_zone, other in selected.items():
+            if other_zone == zone_id:
+                continue
+            pair_crossings, clearance = (
+                self._heuristic_route_pair_metrics(candidate, other)
+            )
+            crossings += pair_crossings
+            if np.isfinite(clearance):
+                gap_deficit += max(
+                    self.min_leader_gap - clearance, 0.0,
+                )
+        return crossings, gap_deficit, candidate["score"]
+
+    def _heuristic_route_pair_metrics(self, first, second):
+        crossing_count = int(first["line"].intersects(second["line"]))
+        if first["band"] != second["band"]:
+            return crossing_count, np.inf
+        center_distance = abs(
+            first["diagonal_intercept"]
+            - second["diagonal_intercept"]
+        ) / np.sqrt(self.leader_slope ** 2 + 1.0)
+        clearance = center_distance - 0.5 * (
+            first["linewidth_px"] + second["linewidth_px"]
+        )
+        return crossing_count, clearance
+
+    def _assignment_crossing_count(self, assignment):
+        entries = list(assignment.values())
+        return sum(
+            self._entry_crossing_count(first, second)
+            for index, first in enumerate(entries)
+            for second in entries[index + 1:]
+        )
 
     @staticmethod
     def _solve_compatible_orders(
@@ -2571,6 +3186,21 @@ class MapTrixVisualizer(ODMatrixVisualizer):
         destination_crossings = self._exported_leader_crossings(
             destination_leaders,
         )
+        routing_diagnostics = None
+        if self._routing_diagnostics is not None:
+            routing_diagnostics = dict(self._routing_diagnostics)
+            routing_diagnostics["elapsed_seconds"] = float(
+                time.perf_counter() - self._routing_started_at
+            )
+            routing_diagnostics["crossings"] = {
+                "origin": origin_crossings,
+                "destination": destination_crossings,
+                "total": origin_crossings + destination_crossings,
+            }
+            routing_diagnostics["optimal"] = bool(
+                routing_diagnostics["solver"] == "exact"
+                or origin_crossings + destination_crossings == 0
+            )
         origin_rect = self._axes_rect_to_screen(fig, ax_origin)
         destination_rect = self._axes_rect_to_screen(
             fig, ax_destination,
@@ -2691,6 +3321,7 @@ class MapTrixVisualizer(ODMatrixVisualizer):
                 "destination": destination_crossings,
                 "total": origin_crossings + destination_crossings,
             },
+            "routing_diagnostics": routing_diagnostics,
             "minimum_diagonal_gap": {
                 "origin": self._exported_minimum_diagonal_gap(
                     fig, origin_leaders,

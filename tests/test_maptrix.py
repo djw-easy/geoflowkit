@@ -283,6 +283,71 @@ def test_allow_leader_crossings_exports_optimised_crossing_count():
     plt.close(fig)
 
 
+def test_auto_routing_uses_heuristic_above_exact_zone_limit():
+    zones, flows = _same_set_fixture()
+    visualizer = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        allow_leader_crossings=True,
+        routing_solver="auto",
+        exact_routing_zone_limit=3,
+        site_grid_size=3,
+        show_labels=False,
+    )
+    fig = visualizer.fit_plot(flows, figsize=(12, 8))
+    diagnostics = visualizer.layout_["routing_diagnostics"]
+
+    assert diagnostics["requested_solver"] == "auto"
+    assert diagnostics["solver"] == "heuristic"
+    assert diagnostics["candidate_routes"] > 0
+    assert diagnostics["elapsed_seconds"] >= 0
+    assert diagnostics["crossings"] == {
+        "origin": 0,
+        "destination": 0,
+        "total": 0,
+    }
+    assert diagnostics["optimal"] is True
+    assert visualizer.row_order_ == visualizer.column_order_
+    repeated = MapTrixVisualizer(
+        zones,
+        zone_id_col="id",
+        allow_leader_crossings=True,
+        routing_solver="auto",
+        exact_routing_zone_limit=3,
+        site_grid_size=3,
+        show_labels=False,
+    )
+    repeated_fig = repeated.fit_plot(flows, figsize=(12, 8))
+    assert repeated.row_order_ == visualizer.row_order_
+    assert repeated.column_order_ == visualizer.column_order_
+    assert (
+        repeated.layout_["leader_crossings"]
+        == visualizer.layout_["leader_crossings"]
+    )
+    plt.close(repeated_fig)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"routing_solver": "fast"}, "routing_solver must be one of"),
+        (
+            {"exact_routing_zone_limit": 1},
+            "exact_routing_zone_limit must be an integer",
+        ),
+        (
+            {"routing_max_iterations": 0},
+            "routing_max_iterations must be a positive integer",
+        ),
+    ],
+)
+def test_routing_solver_rejects_invalid_arguments(kwargs, message):
+    zones, _ = _same_set_fixture()
+    with pytest.raises(ValueError, match=message):
+        MapTrixVisualizer(zones, zone_id_col="id", **kwargs)
+
+
 def test_allow_leader_crossings_requires_boolean():
     zones, _ = _same_set_fixture()
     with pytest.raises(
@@ -425,6 +490,9 @@ def test_semantic_layout_defaults_are_public_signature_defaults():
     assert parameters["colorbar_height_ratio"].default == 0.88
     assert parameters["matrix_scale"].default == 1.0
     assert parameters["layout_rect"].default == (0.04, 0.08, 0.894, 0.84)
+    assert parameters["routing_solver"].default == "auto"
+    assert parameters["exact_routing_zone_limit"].default == 12
+    assert parameters["routing_max_iterations"].default == 30
     for removed in (
         "origin_map_rect",
         "destination_map_rect",
