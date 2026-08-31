@@ -32,8 +32,10 @@ def nth_largest(
     ValueError
         If ``n`` is greater than the length of the specified axis.
     """
-    if n > arr.shape[axis]:
-        raise ValueError("n cannot be greater than the length of the specified axis")
+    if n < 1 or n > arr.shape[axis]:
+        raise ValueError(
+            "n must be between 1 and the length of the specified axis"
+        )
     
     # Use np.partition to find the Nth largest number
     kth = -n  # Index of the Nth largest number
@@ -75,17 +77,25 @@ def _second_order_density(
 
     Raises
     ------
-    AssertionError
-        If distance matrix is not square
+    ValueError
+        If the distance matrix or mask has an invalid shape.
+    TypeError
+        If mask is not a NumPy array.
     NotImplementedError
         If distance metric is not 'max'
     """
-    assert dis_matrix.ndim==2 and dis_matrix.shape[0] == dis_matrix.shape[1], "The distance matrix must be square."
+    if dis_matrix.ndim != 2 or dis_matrix.shape[0] != dis_matrix.shape[1]:
+        raise ValueError("The distance matrix must be square")
     flow_num = dis_matrix.shape[0]
     if mask is not None:
-        assert isinstance(mask, np.ndarray), "The mask must be a numpy array."
-        assert mask.ndim == 1 and mask.size <= flow_num, "The mask must be 1-D and smaller or equal than the number of flows."
-        assert np.any(mask), "The mask must contain at least one True value."
+        if not isinstance(mask, np.ndarray):
+            raise TypeError("The mask must be a NumPy array")
+        if mask.ndim != 1 or mask.size != flow_num:
+            raise ValueError(
+                "The mask must be 1-D with one value per flow"
+            )
+        if not np.any(mask):
+            raise ValueError("The mask must contain at least one True value")
     else:
         mask = np.ones(flow_num, dtype=bool)
     available_flow_num = np.count_nonzero(mask)
@@ -139,15 +149,17 @@ def second_order_density(
 
     Raises
     ------
-    AssertionError
-        If distance matrix is not square
+    ValueError
+        If the distance matrix is not square.
     """
     if dis_matrix is None:
         dis_matrix = pairwise_distances(fdf, distance=distance, **kwargs)
     else:
-        assert dis_matrix.ndim==2 and dis_matrix.shape[0] == dis_matrix.shape[1], "The distance matrix must be square."
+        if dis_matrix.ndim != 2 or dis_matrix.shape[0] != dis_matrix.shape[1]:
+            raise ValueError("The distance matrix must be square")
     if mask is not None:
-        assert fdf is not None, "The fdf must be provided when mask is not None."
+        if fdf is None:
+            raise ValueError("fdf must be provided when mask is not None")
         mask = fdf.within(mask).values
     
     return _second_order_density(dis_matrix, distance=distance, k=k, mask=mask)

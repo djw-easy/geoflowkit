@@ -224,7 +224,8 @@ class FlowBase:
         """
         from geoflowkit.flow import Flow
         from geoflowkit.flowseries import FlowSeries
-        assert isinstance(other, (Flow, FlowSeries)), "other must be a Flow or FlowSeries"
+        if not isinstance(other, (Flow, FlowSeries)):
+            raise TypeError("other must be a Flow or FlowSeries")
         
         o_dis = np.asarray(self.o.distance(other.o, align=align))
         d_dis = np.asarray(self.d.distance(other.d, align=align))

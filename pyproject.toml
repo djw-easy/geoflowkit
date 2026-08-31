@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geoflowkit"
+dynamic = ["version"]
+description = "A package for geospatial flow analysis and visualization"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "GeoFlow Developer", email = "djw@lreis.ac.cn" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "shapely>=2.0",
+    "numpy",
+    "pandas",
+    "geopandas>=1.0.1",
+    "matplotlib",
+    "scipy>=1.9",
+    "scikit-learn",
+    "networkx>=2.6",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "pytest-cov>=4",
+]
+
+[project.urls]
+Homepage = "https://github.com/djw-easy/geoflowkit"
+Repository = "https://github.com/djw-easy/geoflowkit"
+Issues = "https://github.com/djw-easy/geoflowkit/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "geoflowkit.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["geoflowkit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["geoflowkit"]
+
+[tool.coverage.report]
+show_missing = true

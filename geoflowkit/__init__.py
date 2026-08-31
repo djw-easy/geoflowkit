@@ -1,4 +1,4 @@
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 from geoflowkit.flow import Flow
 from geoflowkit.flowseries import FlowSeries

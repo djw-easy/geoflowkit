@@ -1,6 +1,7 @@
 import numpy as np
 import geopandas as gpd
 import pytest
+import warnings
 from shapely.geometry import box
 from geoflowkit import FlowDataFrame, FlowSeries, flows_from_od
 from geoflowkit.spatial.kl_function import k_func, l_func, local_l_func
@@ -35,6 +36,16 @@ class TestSecondOrderDensity:
         with pytest.raises(NotImplementedError):
             second_order_density(fdf, distance='sum')
 
+    def test_non_square_matrix_raises(self):
+        with pytest.raises(ValueError, match="square"):
+            second_order_density(dis_matrix=np.ones((2, 3)))
+
+    def test_mask_requires_fdf(self):
+        with pytest.raises(ValueError, match="fdf"):
+            second_order_density(
+                dis_matrix=np.zeros((2, 2)), mask=box(0, 0, 1, 1)
+            )
+
 
 class TestNthLargest:
     def test_1d(self):
@@ -60,6 +71,11 @@ class TestNthLargest:
         arr = np.array([[1, 2], [3, 4]])
         with np.testing.assert_raises(ValueError):
             nth_largest(arr, 5, axis=1)
+
+    def test_n_must_be_positive(self):
+        from geoflowkit.spatial.utils import nth_largest
+        with pytest.raises(ValueError, match="between 1"):
+            nth_largest(np.array([1, 2]), 0, axis=0)
 
 
 class TestKFunc:
@@ -156,6 +172,15 @@ class TestIIndex:
                 box(100, 100, 110, 110),
             ]
         }, crs="EPSG:3857")
-        result = i_index(self.fdf, zones)
+        with warnings.catch_warnings(record=True) as warning_record:
+            warnings.simplefilter("always")
+            result = i_index(self.fdf, zones)
+        assert len(warning_record) == 0
         assert all(result['I_index'] == 0)
         assert all(result['flow_count'] == 0)
+        assert all(result['alpha'] == 0.0)
+
+    @pytest.mark.parametrize('alpha', [0, -1, np.nan, np.inf])
+    def test_invalid_alpha_raises(self, alpha):
+        with pytest.raises(ValueError, match="alpha"):
+            i_index(self.fdf, self._make_zones(), alpha=alpha)

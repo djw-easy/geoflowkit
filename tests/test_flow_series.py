@@ -22,6 +22,11 @@ class TestFlowSeries(unittest.TestCase):
         self.assertIsInstance(self.fs1, FlowSeries)
         self.assertTrue(all(isinstance(f, Flow) for f in self.fs1))
 
+    def test_empty_creation_without_data(self):
+        fs = FlowSeries()
+        self.assertIsInstance(fs, FlowSeries)
+        self.assertEqual(len(fs), 0)
+
     def test_invalid_data(self):
         """Test validation of input data"""
         with self.assertRaises(TypeError):
@@ -139,6 +144,9 @@ class TestFlowSeries(unittest.TestCase):
         # Invalid distance method
         with self.assertRaises(ValueError):
             self.fs1.distance(self.fs2, distance="invalid")
+
+        with self.assertRaises(TypeError):
+            self.fs1.distance("not a flow")
 
     def test_to_crs(self):
         """Test CRS transformation"""

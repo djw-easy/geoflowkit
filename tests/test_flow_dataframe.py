@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -27,6 +28,16 @@ class TestFlowDataFrame(unittest.TestCase):
         self.assertIsInstance(df.geometry, FlowSeries)
         self.assertEqual(len(df), 3)
         self.assertEqual(df.crs, "EPSG:4326")
+
+    def test_to_file_uses_public_geopandas_api(self):
+        df = FlowDataFrame(self.data, crs="EPSG:4326")
+        with patch.object(gpd.GeoDataFrame, "to_file", autospec=True) as writer:
+            df.to_file("flows.gpkg", driver="GPKG", index=False)
+
+        writer.assert_called_once()
+        self.assertEqual(writer.call_args.args[1], "flows.gpkg")
+        self.assertEqual(writer.call_args.kwargs["driver"], "GPKG")
+        self.assertFalse(writer.call_args.kwargs["index"])
 
     def test_init_with_flow_list(self):
         """Test initialization with list of Flow objects"""

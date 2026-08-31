@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 
-from geoflowkit import FlowDataFrame
+from geoflowkit.flowdataframe import FlowDataFrame
 
 
 def _i_index_func(flow_lengths: np.ndarray, alpha: float) -> dict:
@@ -113,6 +113,9 @@ def i_index(fdf: FlowDataFrame, zones: gpd.GeoDataFrame,
     >>> # Using origin points instead of destination
     >>> result = i_index(fdf, zones, od_type='o')
     """
+    if alpha is not None and (not np.isfinite(alpha) or alpha <= 0):
+        raise ValueError("alpha must be a finite number greater than 0")
+
     # Ensure CRS consistency
     if fdf.crs != zones.crs:
         zones = zones.to_crs(fdf.crs)
@@ -148,10 +151,21 @@ def i_index(fdf: FlowDataFrame, zones: gpd.GeoDataFrame,
 
     # Auto-calculate alpha if not provided
     if alpha is None:
-        grouped = flows_with_zones.groupby('zone_id')
-        medians = grouped['flow_length'].median()
-        counts = grouped.size()
-        alpha = np.median(medians.values) / np.median(counts.values)
+        if flows_with_zones.empty:
+            # There is no scale to infer, and every zone necessarily has an
+            # I-index of zero. Use a stable sentinel instead of median([]),
+            # which emits warnings and produces NaN.
+            alpha = 0.0
+        else:
+            grouped = flows_with_zones.groupby('zone_id')
+            medians = grouped['flow_length'].median()
+            counts = grouped.size()
+            alpha = np.median(medians.values) / np.median(counts.values)
+            if not np.isfinite(alpha) or alpha <= 0:
+                raise ValueError(
+                    "Could not infer a positive alpha from flow lengths; "
+                    "provide alpha explicitly"
+                )
 
     # Calculate I-index for each zone
     results = []

@@ -53,6 +53,8 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
         **kwargs: Any,
     ) -> None:
         name = kwargs.pop("name", None)
+        if data is None:
+            data = []
         if data is not None:
             if (
                 hasattr(data, "crs")
@@ -136,7 +138,8 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
         self, mgr: SingleBlockManager, axes: Any
     ) -> "FlowSeries":
         """Create a FlowSeries from a pandas SingleBlockManager."""
-        assert isinstance(mgr, SingleBlockManager)
+        if not isinstance(mgr, SingleBlockManager):
+            raise TypeError("FlowSeries requires a pandas SingleBlockManager")
 
         if not isinstance(mgr.blocks[0].dtype, GeometryDtype):
             raise TypeError("All elements must be Flow objects")

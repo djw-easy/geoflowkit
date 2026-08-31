@@ -53,15 +53,22 @@ def _haversine_pdist(coords: np.ndarray) -> np.ndarray:
     n_pairs = n * (n - 1) // 2
     distances = np.empty(n_pairs)
 
-    idx = 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            dlon = lon1[j] - lon1[i]
-            dlat = lat1[j] - lat1[i]
-            a = np.sin(dlat / 2) ** 2 + np.cos(lat1[i]) * np.cos(lat1[j]) * np.sin(dlon / 2) ** 2
-            c = 2 * np.arcsin(np.sqrt(a))
-            distances[idx] = R * c
-            idx += 1
+    # Keep SciPy's condensed-matrix ordering while vectorizing each row. This
+    # avoids the quadratic number of Python iterations without allocating a
+    # second full pairwise matrix.
+    offset = 0
+    for i in range(n - 1):
+        row_size = n - i - 1
+        dlon = lon1[i + 1:] - lon1[i]
+        dlat = lat1[i + 1:] - lat1[i]
+        a = (
+            np.sin(dlat / 2) ** 2
+            + np.cos(lat1[i]) * np.cos(lat1[i + 1:]) * np.sin(dlon / 2) ** 2
+        )
+        # Floating-point roundoff can put ``a`` just outside [0, 1].
+        c = 2 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+        distances[offset:offset + row_size] = R * c
+        offset += row_size
 
     return distances
 
@@ -107,8 +114,21 @@ def pairwise_distances(fdf: FlowDataFrame, distance='max', metric='euclidean',
         If an invalid 'distance' type is specified or if handle_geographic='error'
         and a geographic CRS is detected.
     """
+    valid_geographic_modes = {'warn', 'error', 'euclidean'}
+    if handle_geographic not in valid_geographic_modes:
+        raise ValueError(
+            "handle_geographic must be 'warn', 'error', or 'euclidean'"
+        )
+    valid_distance_modes = {'max', 'sum', 'min', 'mean', 'weighted'}
+    if distance not in valid_distance_modes:
+        raise ValueError(
+            "distance must be 'max', 'sum', 'min', 'mean', or 'weighted'"
+        )
+
     origins = shapely.get_coordinates(fdf.o)
     destinations = shapely.get_coordinates(fdf.d)
+    if len(fdf) == 0:
+        return np.empty((0, 0), dtype=float)
 
     # Check CRS
     crs = getattr(fdf, 'crs', None)
@@ -126,12 +146,13 @@ def pairwise_distances(fdf: FlowDataFrame, distance='max', metric='euclidean',
                 "Input CRS is geographic (lat/lon). "
                 "Using haversine distance for accurate great-circle calculation. "
                 "For faster euclidean distance on projected coordinates, "
-                "consider converting to a projected CRS (e.g., EPSG:3857)."
+                "consider converting to a projected CRS (e.g., EPSG:3857).",
+                stacklevel=2,
             )
             # Use haversine for geographic coordinates
             o_dis = _haversine_pdist(origins)
             d_dis = _haversine_pdist(destinations)
-        else:  # 'euclidean'
+        else:  # handle_geographic == 'euclidean'
             o_dis = pdist(origins, metric=metric)
             d_dis = pdist(destinations, metric=metric)
     else:
@@ -148,18 +169,32 @@ def pairwise_distances(fdf: FlowDataFrame, distance='max', metric='euclidean',
     elif distance == 'mean':
         return squareform((o_dis + d_dis) / 2)
     elif distance == 'weighted':
-        if is_geographic:
-            warnings.warn("Weighted distances with haversine may be inaccurate.")
+        if is_geographic and handle_geographic == 'warn':
+            warnings.warn(
+                "Weighted distances with haversine may be inaccurate.",
+                stacklevel=2,
+            )
         if not length:
             return squareform(np.sqrt(w1 * o_dis ** 2 + w2 * d_dis ** 2))
         else:
             lengths = fdf.length.values
-            denominator = np.sqrt(np.outer(lengths, lengths))
+            denominator = np.outer(lengths, lengths)
             o_full = squareform(o_dis)
             d_full = squareform(d_dis)
-            return np.sqrt(w1 * o_full ** 2 + w2 * d_full ** 2 / denominator)
-    else:
-        raise ValueError("distance must be 'max', 'sum', 'min', 'mean', or 'weighted'")
+            numerator = w1 * o_full ** 2 + w2 * d_full ** 2
+            normalized = np.full_like(numerator, np.inf, dtype=float)
+            np.divide(
+                numerator,
+                denominator,
+                out=normalized,
+                where=denominator > 0,
+            )
+            # Two identical zero-length flows have zero distance. Other pairs
+            # involving a zero-length flow remain infinite because the
+            # length-normalized metric is undefined for them.
+            normalized[(denominator == 0) & (numerator == 0)] = 0.0
+            np.fill_diagonal(normalized, 0.0)
+            return np.sqrt(normalized)
 
 
 def _knn_neighborhood(coords: np.ndarray, k: int) -> np.ndarray:
@@ -219,6 +254,12 @@ def k_neighbor_distances(fdf: FlowDataFrame, k: int, distance='max',
     if k < 1:
         raise ValueError("k must be >= 1")
 
+    n_flows = len(fdf)
+    if k >= n_flows:
+        raise ValueError(
+            f"k must be smaller than the number of flows ({n_flows}), got {k}"
+        )
+
     if dis_matrix is None:
         dis_matrix = pairwise_distances(fdf, distance=distance)
 
@@ -263,6 +304,12 @@ def snn_distance(fdf: FlowDataFrame, k: int, distance: str = 'max') -> np.ndarra
     """
     if k < 1:
         raise ValueError("k must be >= 1")
+
+    n_flows = len(fdf)
+    if k >= n_flows:
+        raise ValueError(
+            f"k must be smaller than the number of flows ({n_flows}), got {k}"
+        )
 
     origins = shapely.get_coordinates(fdf.o)
     destinations = shapely.get_coordinates(fdf.d)
@@ -317,13 +364,16 @@ def flow_entropy(fdf: FlowDataFrame, cell_area=None) -> float:
     """
     n = len(fdf)
 
+    if n == 0:
+        return 0.0
+
     # Count flows per OD zone pair (assumes zones are indexed by flow position)
     # If fdf has 'origin_id' and 'dest_id' columns, use those; otherwise uniform distribution
     p = np.ones(n) / n  # Uniform distribution
 
     if cell_area is None:
         # Standard Shannon entropy (Eq. 2-15)
-        entropy = -np.sum(p * np.log2(p + 1e-10))
+        entropy = -np.sum(p[p > 0] * np.log2(p[p > 0]))
     else:
         # Batty's spatial entropy (Eq. 2-16/2-17)
         area_normalized = cell_area / (cell_area.sum() + 1e-10)
@@ -381,6 +431,7 @@ def flow_divergence(fdf: FlowDataFrame, n_directions: int = 6) -> float:
     p = counts / total
 
     # Shannon entropy (Eq. 2-18)
-    entropy = -np.sum(p * np.log2(p + 1e-10))
+    nonzero = p > 0
+    entropy = -np.sum(p[nonzero] * np.log2(p[nonzero]))
 
     return entropy

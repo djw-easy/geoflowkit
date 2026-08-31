@@ -574,9 +574,14 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
         ... )  # doctest: +SKIP
 
         """
-        from geopandas.io.file import _to_file
         gdf = gpd.GeoDataFrame(self)
-        _to_file(gdf, filename, driver, schema, index, **kwargs)
+        gdf.to_file(
+            filename,
+            driver=driver,
+            schema=schema,
+            index=index,
+            **kwargs,
+        )
 
     def to_crs(
         self,
