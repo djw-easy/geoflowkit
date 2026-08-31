@@ -181,7 +181,7 @@ class TestFlowDataFrame(unittest.TestCase):
         import os
 
         data = self.data.copy()
-        data['category'] = ['A', 'B', 'A']
+        data['category'] = pd.array(['A', 'B', 'A'], dtype='string')
         df = FlowDataFrame(data, crs="EPSG:4326")
         ax = df.plot(kind='arrow', column='category')
         self.assertIsNotNone(ax)

@@ -687,7 +687,9 @@ class FlowDataFrame(FlowBase, GeoPandasBase, DataFrame):
                         raise ValueError(
                             f"Array length {len(C)} does not match number of flows {len(self)}."
                         )
-                is_numeric = np.issubdtype(C.dtype, np.number)
+                # pandas extension dtypes (for example StringDtype in pandas
+                # 3.x) are not always interpretable by ``np.issubdtype``.
+                is_numeric = pd.api.types.is_numeric_dtype(C.dtype)
             else:
                 C = None
                 is_numeric = True

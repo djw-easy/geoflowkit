@@ -335,7 +335,7 @@ class FlowSeries(FlowBase, GeoPandasBase, Series):
 
         if C is not None:
             C = np.asarray(C)
-            is_numeric = np.issubdtype(C.dtype, np.number)
+            is_numeric = pd.api.types.is_numeric_dtype(C.dtype)
             if not is_numeric:
                 # Categorical column: group by category and plot each group
                 # Get unique categories and assign colors
